@@ -3,7 +3,8 @@ from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
 
 import os
-os.environ["OPENAI_API_KEY"] = "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"
+from dotenv import load_dotenv
+load_dotenv()
 
 from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(model="gpt-4o-mini")
