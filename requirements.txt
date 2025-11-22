@@ -106,3 +106,7 @@ wcwidth==0.2.14
 xxhash==3.6.0
 yarl==1.22.0
 zstandard==0.25.0
+neo4j
+neo4j-graphrag
+langchain-neo4j
+langchain-openai
