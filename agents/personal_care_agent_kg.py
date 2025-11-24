@@ -4,7 +4,7 @@ from openai import OpenAI
 from typing import TypedDict, Annotated, Literal
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_neo4j import Neo4jGraph, GraphCypherQAChain
+# from langchain_neo4j import Neo4jGraph, GraphCypherQAChain
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field

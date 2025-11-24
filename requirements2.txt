@@ -1,0 +1,24 @@
+# LangGraph + LangChain stack
+langgraph
+langgraph-prebuilt
+langgraph-checkpoint
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+
+# Retrieval + Embeddings
+sentence-transformers
+scikit-learn
+numpy>=2.1,<2.4
+pandas>=2.2,<2.4
+
+# Neo4j driver
+neo4j
+
+# OpenAI client
+openai
+
+# Utilities
+python-dotenv
+tqdm

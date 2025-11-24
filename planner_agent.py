@@ -1,15 +1,17 @@
-from consulting_agent import build_consulting_agent_graph
+from agents.medline_retriever import retrieve_passages
+from agents.consulting_agent import build_consulting_agent_graph
+from agents.personal_care_agent_kg import create_personal_care_agent
+import json
+import re
 import logging
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
 
-import os
 from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage
-
+from langchain_core.messages import HumanMessage
 
 llm = ChatOpenAI(model="gpt-4o-mini")
 consult_graph = build_consulting_agent_graph()
@@ -17,6 +19,7 @@ consult_graph = build_consulting_agent_graph()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 
 
+# ----------------- State definitions -----------------
 class RetrievalState(TypedDict, total=False):
     passages: List[str]
     urls: List[str]
@@ -29,12 +32,9 @@ class ConsultState(TypedDict, total=False):
 class CareState(TypedDict, total=False):
     plan: str
     warnings: List[str]
+    care_details: dict  # structured parsed plan sections
 
-class SafetyState(TypedDict, total=False):
-    validated_output: str
-    citations: List[str]
-
-class PipelineState(RetrievalState, ConsultState, CareState, SafetyState):
+class PipelineState(RetrievalState, ConsultState, CareState):
     user_query: str
     history: List[str]
     final_output: str
@@ -44,10 +44,77 @@ class PipelineState(RetrievalState, ConsultState, CareState, SafetyState):
     last_question: str
 
 
+# Create the Personal Care LLM agent once (re-used across calls)
+care_llm_agent = create_personal_care_agent()
+
+
+def _parse_care_output(text: str) -> dict:
+    """
+    Naively parse the personal care agent output into sections.
+    We look for headings like:
+      - POSSIBLE CONDITIONS:
+      - LIFESTYLE RECOMMENDATIONS:
+      - POSSIBLE TREATMENTS:
+      - NEXT STEPS:
+      - REFERENCES:
+    and split their content into bullet-style lists.
+    """
+    sections = {
+        "possible_conditions": [],
+        "lifestyle_recommendations": [],
+        "treatments": [],
+        "next_steps": [],
+        "references": [],
+    }
+
+    if not text:
+        return sections
+
+    t = text.replace("\r", "")
+
+    patterns = {
+        "possible_conditions": r"POSSIBLE CONDITIONS:(.*?)(?=\n[A-Z ]+:|$)",
+        "lifestyle_recommendations": r"LIFESTYLE RECOMMENDATIONS:(.*?)(?=\n[A-Z ]+:|$)",
+        "treatments": r"POSSIBLE TREATMENTS:(.*?)(?=\n[A-Z ]+:|$)",
+        "next_steps": r"NEXT STEPS:(.*?)(?=\n[A-Z ]+:|$)",
+        "references": r"REFERENCES:(.*?)(?=\n[A-Z ]+:|$)",
+    }
+
+    for key, pat in patterns.items():
+        m = re.search(pat, t, flags=re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+        block = m.group(1).strip()
+        if not block:
+            continue
+
+        lines = [
+            ln.strip("•- \t")
+            for ln in block.splitlines()
+            if ln.strip()
+        ]
+        sections[key] = lines
+
+    return sections
+
+
+# ----------------- Nodes -----------------
 def retriever_agent(state: PipelineState) -> PipelineState:
-    logging.info("Retriever agent running...")
-    state["passages"] = [f"[Stub] Retrieved info for: {state['user_query']}"]
-    state["urls"] = ["https://medlineplus.gov/"]
+    logging.info("Retriever agent running with MedlinePlus embeddings...")
+
+    query = state["user_query"]
+
+    # If consulting already added symptoms, we can enrich the query
+    profile = state.get("patient_profile") or {}
+    symptoms = profile.get("symptoms") or []
+    if symptoms:
+        query += " " + " ".join(symptoms)
+
+    results = retrieve_passages(query, top_k=6)
+
+    state["passages"] = [r["text"] for r in results]
+    state["urls"] = [r["url"] for r in results]
+
     return state
 
 
@@ -101,19 +168,72 @@ def followup_node(state: PipelineState) -> PipelineState:
 
 
 def personal_care_agent(state: PipelineState) -> PipelineState:
-    logging.info("Personal Care agent running...")
-    answers = state.get("answers") or []
-    state["plan"] = f"[Stub] Care plan based on symptoms + {answers}"
-    state["warnings"] = ["Seek urgent help if symptoms worsen."]
-    return state
+    logging.info("Personal Care agent running with KG + MedlinePlus...")
 
+    # 1. Gather context for the personal care agent
+    patient_profile = state.get("patient_profile", {}) or {}
+    user_query = state.get("user_query", "")
+    passages = state.get("passages", [])
 
-def safety_agent(state: PipelineState) -> PipelineState:
-    logging.info("Safety Critic agent running...")
-    validated = f"SAFE OUTPUT: {state['plan']}"
-    state["validated_output"] = validated
-    state["citations"] = state.get("urls", [])
-    state["final_output"] = validated
+    refs_text = ""
+    if passages:
+        refs_text = "\n".join(f"- {p}" for p in passages[:6])
+
+    user_content = (
+        "Here is the patient's situation.\n\n"
+        f"Original concern:\n{user_query}\n\n"
+        "Structured symptom info from earlier consulting:\n"
+        f"{json.dumps(patient_profile, indent=2)}\n\n"
+        "Relevant reference snippets from MedlinePlus:\n"
+        f"{refs_text}\n\n"
+        "Please follow your instructions as a Personal Healthcare Coach, "
+        "using the knowledge graph and this context."
+    )
+
+    # 2. Call the personal care LLM + KG agent
+    try:
+        result = care_llm_agent.invoke(
+            {"messages": [{"role": "user", "content": user_content}]}
+        )
+    except Exception as e:
+        logging.error(f"Personal care agent failed: {e}")
+        state["plan"] = (
+            "Sorry, I had trouble generating a detailed care plan right now. "
+            "Please consider speaking directly with a healthcare professional."
+        )
+        state["warnings"] = ["System error during care planning step."]
+        state["care_details"] = {}
+        return state
+
+    # 3. Extract the assistant's final message text
+    messages = result.get("messages", []) if isinstance(result, dict) else []
+
+    care_text = ""
+    for m in reversed(messages):
+        role = getattr(m, "type", None) or getattr(m, "role", None)
+        if role in ("ai", "assistant"):
+            care_text = m.content if isinstance(m.content, str) else str(m.content)
+            break
+
+    if not care_text and messages:
+        m = messages[-1]
+        care_text = m.content if isinstance(m.content, str) else str(m.content)
+
+    if not care_text:
+        care_text = (
+            "I could not generate a detailed plan, but based on your symptoms, "
+            "please monitor your condition and seek medical help if things worsen."
+        )
+
+    care_details = _parse_care_output(care_text)
+
+    state["plan"] = care_text
+    state["warnings"] = [
+        "This information is not a substitute for professional medical advice.",
+        "Seek urgent help if you experience severe pain, difficulty breathing, chest pain, or persistent/worsening symptoms.",
+    ]
+    state["care_details"] = care_details
+
     return state
 
 
@@ -124,11 +244,13 @@ def planner_summary_node(state: PipelineState) -> PipelineState:
         f"Questions: {state.get('questions')}\n"
         f"Answers: {state.get('answers')}\n"
         f"Plan: {state.get('plan')}\n"
-        f"Final output: {state.get('final_output')}\n"
     )
     history = state.get("history", [])
     history.append(summary)
     state["history"] = history
+
+    # Final output: just use the care plan text (could be extended later)
+    state["final_output"] = state.get("plan") or "[No care plan was generated.]"
     return state
 
 
@@ -139,13 +261,13 @@ def route_from_consult(state: PipelineState):
         return "care"
 
 
+# ----------------- Build the graph -----------------
 workflow = StateGraph(PipelineState)
 
 workflow.add_node("retrieve", retriever_agent)
 workflow.add_node("consult", consulting_agent)
 workflow.add_node("followup", followup_node)
 workflow.add_node("care", personal_care_agent)
-workflow.add_node("safety", safety_agent)
 workflow.add_node("planner_summary", planner_summary_node)
 
 workflow.set_entry_point("retrieve")
@@ -161,13 +283,13 @@ workflow.add_conditional_edges(
 )
 
 workflow.add_edge("followup", END)
-workflow.add_edge("care", "safety")
-workflow.add_edge("safety", "planner_summary")
+workflow.add_edge("care", "planner_summary")
 workflow.add_edge("planner_summary", END)
 
 planner_graph = workflow.compile()
 
 
+# ----------------- Console wrapper -----------------
 class PlannerAgent:
     def __init__(self, graph):
         self.graph = graph
@@ -189,20 +311,16 @@ class PlannerAgent:
 
     def continue_with_answer(self, answer: str):
         if not self.state:
-           return {"type": "final", "output": "[No active conversation]"}
+            return {"type": "final", "output": "[No active conversation]"}
 
-    # 1. Add the user's answer into message history
         msgs = self.state.get("messages", [])
         msgs.append(HumanMessage(content=answer))
         self.state["messages"] = msgs
 
-    # 2. DO NOT replace user_query. It remains the original problem.
-    # 3. Re-invoke graph
         out = self.graph.invoke(self.state)
         self.state = out
 
         return self._analyze(self.state)
-
 
     def _analyze(self, state: PipelineState):
         if state.get("final_output"):
