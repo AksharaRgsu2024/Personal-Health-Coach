@@ -18,7 +18,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain.agents import create_agent
 from langchain.agents.middleware import wrap_tool_call
 from langchain.messages import ToolMessage
-
+from langchain_ollama import ChatOllama
 from langgraph.prebuilt import InjectedState
 from typing import Deque, List, Optional, Tuple
 # Demo database credentials
@@ -52,6 +52,11 @@ class RetrievedTopic(BaseModel):
 class RetrievedList(BaseModel):
     items: List[RetrievedTopic]
 
+llm_model = ChatOllama(
+    base_url="http://10.230.100.240:17020/", #http://localhost:11434", #"http://10.230.100.240:17020/"
+    model="gpt-oss:20b",#"llama3.1:latest",
+    temperature=0.3
+    )
 class Neo4jGPTQuery:
     node_properties_query = """
     CALL apoc.meta.data()
@@ -140,6 +145,8 @@ class Neo4jGPTQuery:
             
         )
         return completion.choices[0].message.content
+        # response=llm_model.invoke(messages)
+        # return response.content
 
     def run(self, question, history=None, retry=True):
         query_result={'cypher query':'', 'result':''}
@@ -229,6 +236,7 @@ def query_medical_knowledge_graph(symptoms_dict: str) -> list[dict]:
         # print(f"Database Results: {database_results}\n")
         # print(f"Final Answer: {result.get('result', '')}\n")
         print(f"Retrieved {len(retrieved_nodes)} nodes")
+        print(f"Debug output:\n{retrieved_nodes}")
         # return {
         #     "success": True,
         #     "result": retrieved_nodes,
@@ -258,15 +266,16 @@ medical_agent_system_prompt="""
     - LIFESTYLE RECOMMENDATIONS: Provide actionable lifestyle modifications
     - POSSIBLE TREATMENTS: Suggest treatment options (mention diagnostic tests, medications, therapies)
     - NEXT STEPS: Recommend when to seek medical care
-    - REFERENCES: URL links for the relevant health topics from the knowledge graph for further information
+    - REFERENCES: URL links of the health topics retrieved from the knowledge graph 
     
-    Important: Always emphasize that this is informational and not a substitute for professional medical advice.
+    Important: Do not add any external links or information, only use the context and retrieved nodes from the knowledge graph to answer. Always emphasize that this is informational and not a substitute for professional medical advice.
     Format your response in clear, structured sections.
 """
 
 def create_personal_care_agent():
-    basic_model = ChatOpenAI(model="gpt-4o-mini")
-    agent=create_agent(model=basic_model, tools=[query_medical_knowledge_graph], system_prompt=medical_agent_system_prompt)
+    # llm_model = ChatOpenAI(model="gpt-4o-mini")
+    
+    agent=create_agent(model=llm_model, tools=[query_medical_knowledge_graph], system_prompt=medical_agent_system_prompt)
     return agent
 
 if __name__=="__main__":

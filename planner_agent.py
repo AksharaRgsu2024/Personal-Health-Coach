@@ -1,19 +1,25 @@
 from agents.medline_retriever import retrieve_passages
-from agents.consulting_agent import build_consulting_agent_graph
+from agents.consulting_agent_with_memory import build_consulting_agent_graph, PatientProfile
 from agents.personal_care_agent_kg import create_personal_care_agent
 import json
 import re
 import logging
 from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
-
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain_ollama import ChatOllama
 from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
-llm = ChatOpenAI(model="gpt-4o-mini")
+# llm = ChatOpenAI(model="gpt-4o-mini")
+llm = ChatOllama(
+    base_url="http://10.230.100.240:17020/", #http://localhost:11434", #"http://10.230.100.240:17020/"
+    model="gpt-oss:20b",#"llama3.1:latest",
+    temperature=0.3
+)
 consult_graph = build_consulting_agent_graph()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
@@ -38,7 +44,7 @@ class PipelineState(RetrievalState, ConsultState, CareState):
     user_query: str
     history: List[str]
     final_output: str
-    patient_profile: dict
+    patient_profile: PatientProfile
     messages: list
     turn_count: int
     last_question: str
@@ -106,9 +112,18 @@ def retriever_agent(state: PipelineState) -> PipelineState:
 
     # If consulting already added symptoms, we can enrich the query
     profile = state.get("patient_profile") or {}
-    symptoms = profile.get("symptoms") or []
-    if symptoms:
-        query += " " + " ".join(symptoms)
+
+    if type(profile)==dict:
+        symptoms = profile.get("symptoms") or []
+    elif type(profile)==PatientProfile:
+        symptoms=profile.symptoms
+    # if symptoms and type(symptoms)==list:
+    
+    #     query += " " + " ".join(symptoms)
+    # elif type(symptoms)==dict:
+    #     symptoms_list=list(symptoms.items())
+    #     query+=" "+ ', '.join(f"({key},{value})" for key, value in symptoms_list)
+    query+=" "+ ', '.join(f"({key}:{value})" for symptom in symptoms for key, value in symptom.items())
 
     results = retrieve_passages(query, top_k=6)
 
@@ -183,7 +198,7 @@ def personal_care_agent(state: PipelineState) -> PipelineState:
         "Here is the patient's situation.\n\n"
         f"Original concern:\n{user_query}\n\n"
         "Structured symptom info from earlier consulting:\n"
-        f"{json.dumps(patient_profile, indent=2)}\n\n"
+        f"{json.dumps(patient_profile.model_dump_json(), indent=2)}\n\n"
         "Relevant reference snippets from MedlinePlus:\n"
         f"{refs_text}\n\n"
         "Please follow your instructions as a Personal Healthcare Coach, "
@@ -286,6 +301,8 @@ workflow.add_edge("followup", END)
 workflow.add_edge("care", "planner_summary")
 workflow.add_edge("planner_summary", END)
 
+#Add short-term memory
+# checkpointer = InMemorySaver()
 planner_graph = workflow.compile()
 
 
@@ -294,7 +311,8 @@ class PlannerAgent:
     def __init__(self, graph):
         self.graph = graph
         self.state: PipelineState | None = None
-
+        self.thread_config={"configurable": {"thread_id": "1"}}
+                            
     def start(self, query: str):
         self.state = {
             "user_query": query,
@@ -305,7 +323,7 @@ class PlannerAgent:
             "turn_count": 0,
             "last_question": "",
         }
-        out = self.graph.invoke(self.state)
+        out = self.graph.invoke(self.state, self.thread_config)
         self.state = out
         return self._analyze(self.state)
 
@@ -317,7 +335,7 @@ class PlannerAgent:
         msgs.append(HumanMessage(content=answer))
         self.state["messages"] = msgs
 
-        out = self.graph.invoke(self.state)
+        out = self.graph.invoke(self.state, self.thread_config)
         self.state = out
 
         return self._analyze(self.state)
