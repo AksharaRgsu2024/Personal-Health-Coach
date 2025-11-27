@@ -20,7 +20,8 @@ class PatientProfile(BaseModel):
     id: str
     name: str
     sex: str
-    symptoms: List[SymptomDict]
+    age: int
+    symptoms: List[SymptomDict]=[]
     
     @field_validator('symptoms', mode='before')
     @classmethod

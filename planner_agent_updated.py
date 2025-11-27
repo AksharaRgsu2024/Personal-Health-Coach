@@ -1,0 +1,620 @@
+from agents.medline_retriever import retrieve_passages
+from agents.consulting_agent_with_memory import build_consulting_agent_graph, PatientProfile
+from agents.personal_care_agent_lt_memory import create_personal_care_agent, initialize_memory, PatientHistory
+import json
+import re
+import logging
+from typing import TypedDict, List, Any, Literal, Optional
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import InMemorySaver
+from dataclasses import dataclass
+from langgraph.store.memory import InMemoryStore
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+from datetime import datetime
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, AIMessage
+
+load_dotenv()
+
+# Configure LLM
+llm = ChatOllama(
+    base_url="http://10.230.100.240:17020/",
+    model="gpt-oss:20b",
+    temperature=0.3
+)
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
+
+# Global store instance (not in state to avoid serialization issues)
+GLOBAL_STORE: Optional[InMemoryStore] = None
+
+@dataclass
+class Context:
+    user_id: str
+    store: InMemoryStore
+
+
+# ----------------- State definitions -----------------
+class RetrievalState(TypedDict, total=False):
+    passages: List[str]
+    urls: List[str]
+
+class ConsultState(TypedDict, total=False):
+    questions: List[str]
+    answers: List[str]
+    needs_more: bool
+
+class CareState(TypedDict, total=False):
+    plan: str
+    warnings: List[str]
+    care_details: dict
+
+class PipelineState(RetrievalState, ConsultState, CareState):
+    user_query: str
+    history: List[str]
+    final_output: str
+    patient_profile: Optional[dict]  # Use dict for serialization
+    patient_history: Optional[dict]  # Use dict for serialization
+    patient_id: str  # Store patient ID separately
+    messages: list
+    turn_count: int
+    last_question: str
+    profile_complete: bool
+    is_returning_patient: bool
+    patient_lookup_attempted: bool
+
+
+# Memory functions
+def lookup_patient_in_store(patient_id: str, store: InMemoryStore) -> Optional[PatientHistory]:
+    """Look up patient in the store by patient ID."""
+    if not patient_id:
+        return None
+    
+    namespace = ("PatientDetails",)
+    
+    try:
+        patient_data = store.get(namespace, patient_id)
+        if patient_data and patient_data.value:
+            history = PatientHistory.model_validate(patient_data.value)
+            return history
+    except Exception as e:
+        print(f"Error looking up patient {patient_id}: {e}")
+    
+    return None
+
+
+def save_new_patient_to_store(patient_profile: PatientProfile, store: InMemoryStore) -> bool:
+    """Save a new patient profile to the store."""
+    namespace = ("PatientDetails",)
+    
+    try:
+        history = PatientHistory(
+            profile=patient_profile,
+            recommendations=[],
+            created_at=datetime.now().isoformat(),
+            last_updated=datetime.now().isoformat()
+        )
+        
+        store.put(namespace, patient_profile.id, history.model_dump())
+        print(f"✓ Saved new patient {patient_profile.id} to store")
+        return True
+    except Exception as e:
+        print(f"Error saving patient: {e}")
+        return False
+
+
+def generate_patient_id(name: str) -> str:
+    """Generate a unique patient ID based on name and timestamp."""
+    name_part = ''.join(name.split()[:2])[:6].upper().replace(" ", "")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M")
+    return f"P-{name_part}-{timestamp}"
+
+
+def _parse_care_output(text: str) -> dict:
+    """Parse the personal care agent output into sections."""
+    sections = {
+        "possible_conditions": [],
+        "lifestyle_recommendations": [],
+        "treatments": [],
+        "next_steps": [],
+        "references": [],
+    }
+
+    if not text:
+        return sections
+
+    t = text.replace("\r", "")
+
+    patterns = {
+        "possible_conditions": r"POSSIBLE CONDITIONS:(.*?)(?=\n[A-Z ]+:|$)",
+        "lifestyle_recommendations": r"LIFESTYLE RECOMMENDATIONS:(.*?)(?=\n[A-Z ]+:|$)",
+        "treatments": r"POSSIBLE TREATMENTS:(.*?)(?=\n[A-Z ]+:|$)",
+        "next_steps": r"NEXT STEPS:(.*?)(?=\n[A-Z ]+:|$)",
+        "references": r"REFERENCES:(.*?)(?=\n[A-Z ]+:|$)",
+    }
+
+    for key, pat in patterns.items():
+        m = re.search(pat, t, flags=re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+        block = m.group(1).strip()
+        if not block:
+            continue
+
+        lines = [
+            ln.strip("•- \t")
+            for ln in block.splitlines()
+            if ln.strip()
+        ]
+        sections[key] = lines
+
+    return sections
+
+
+# ----------------- Nodes -----------------
+def patient_intake_node(state: PipelineState) -> PipelineState:
+    """Handle patient intake - lookup or create new profile."""
+    logging.info("Patient Intake node running...")
+    
+    global GLOBAL_STORE
+    if not GLOBAL_STORE:
+        raise ValueError("Global store not initialized")
+    
+    # Check if patient is already loaded (for continuation)
+    if state.get("profile_complete"):
+        logging.info("Profile already complete, skipping intake")
+        return state
+    
+    # Get patient_id from state (set during initialization)
+    patient_id = state.get("patient_id", "").strip()
+    
+    if patient_id:
+        # Try to look up existing patient
+        print(f"🔍 Looking up patient ID: {patient_id}...")
+        patient_hist = lookup_patient_in_store(patient_id, GLOBAL_STORE)
+        
+        if patient_hist:
+            print(f"\n✓ Welcome back, {patient_hist.profile.name}!")
+            print(f"   Age: {patient_hist.profile.age}, Sex: {patient_hist.profile.sex}")
+            print(f"   Previous visits: {len(patient_hist.recommendations)}")
+            
+            if patient_hist.recommendations:
+                last_rec = patient_hist.recommendations[-1]
+                print(f"   Last visit: {last_rec.date}")
+                print(f"   Previous symptoms: {', '.join(last_rec.symptoms_at_time[:3])}")
+            
+            # Convert to dict for state serialization
+            state["patient_profile"] = patient_hist.profile.model_dump()
+            state["patient_history"] = patient_hist.model_dump()
+            state["is_returning_patient"] = True
+            state["profile_complete"] = True
+            state["patient_lookup_attempted"] = True
+            
+            return state
+        else:
+            print(f"\n✗ Patient ID {patient_id} not found in system.")
+            create_new = input("Would you like to create a new profile? (yes/no): ").strip().lower()
+            if create_new != "yes":
+                print("Cannot proceed without patient profile. Exiting.")
+                state["profile_complete"] = False
+                return state
+    
+    # Create new patient profile
+    print("\n" + "="*60)
+    print("CREATING NEW PATIENT PROFILE")
+    print("="*60)
+    
+    patient_name = input("Enter your full name: ").strip()
+    if not patient_name:
+        patient_name = "Unknown Patient"
+    
+    sex = input("Enter your sex (Male/Female/Other): ").strip()
+    age_str = input("Enter your age: ").strip()
+    
+    try:
+        age = int(age_str)
+    except ValueError:
+        age = 0
+        print("Invalid age, setting to 0")
+    
+    # Generate patient ID
+    new_patient_id = generate_patient_id(patient_name)
+    print(f"\n🆔 Generated Patient ID: {new_patient_id}")
+    print("⚠️  Please save this ID for future visits!")
+    
+    # Create and save new profile
+    new_profile = PatientProfile(
+        id=new_patient_id,
+        name=patient_name,
+        sex=sex,
+        age=age,
+        symptoms=[]
+    )
+    
+    save_success = save_new_patient_to_store(new_profile, GLOBAL_STORE)
+    
+    if save_success:
+        print(f"\n✓ Profile created successfully for {patient_name}")
+        state["patient_profile"] = new_profile.model_dump()
+        state["patient_history"] = None
+        state["patient_id"] = new_patient_id
+        state["is_returning_patient"] = False
+        state["profile_complete"] = True
+        state["patient_lookup_attempted"] = True
+    else:
+        print("\n✗ Failed to save profile")
+        state["profile_complete"] = False
+    
+    print("="*60 + "\n")
+    return state
+
+
+def route_from_intake(state: PipelineState) -> Literal["retrieve", END]:
+    """Route after intake based on whether profile is complete."""
+    if state.get("profile_complete"):
+        logging.info("✓ Profile complete, proceeding to retrieval")
+        return "retrieve"
+    else:
+        logging.error("✗ Profile incomplete, ending workflow")
+        return END
+
+
+def retriever_agent(state: PipelineState) -> PipelineState:
+    logging.info("Retriever agent running with MedlinePlus embeddings...")
+
+    query = state["user_query"]
+    profile_dict = state.get("patient_profile", {})
+
+    # Enrich query with symptoms if available
+    if profile_dict and profile_dict.get("symptoms"):
+        symptom_strings = [
+            s.get('description', '') for s in profile_dict["symptoms"]
+        ]
+        query += " " + " ".join(symptom_strings)
+
+    results = retrieve_passages(query, top_k=6)
+
+    state["passages"] = [r["text"] for r in results]
+    state["urls"] = [r["url"] for r in results]
+
+    return state
+
+
+def consulting_agent(state: PipelineState) -> PipelineState:
+    logging.info("Consulting agent running...")
+
+    # Build consulting agent graph (with memory)
+    consult_graph = build_consulting_agent_graph()
+    
+    retrieved_docs = [
+        {
+            "title": p[:60],
+            "summary": p,
+            "url": u,
+        }
+        for p, u in zip(state.get("passages", []), state.get("urls", []))
+    ]
+
+    # Convert dict back to PatientProfile for consulting agent
+    profile_dict = state.get("patient_profile", {})
+    if profile_dict:
+        patient_profile = PatientProfile(**profile_dict)
+    else:
+        patient_profile = None
+
+    agent_state = {
+        "user_query": state["user_query"],
+        "messages": state.get("messages", []),
+        "retrieved_docs": retrieved_docs,
+        "patient_profile": patient_profile,
+        "turn_count": state.get("turn_count", 0),
+        "need_more_info": True,
+        "red_flag": False,
+        "last_question": state.get("last_question"),
+    }
+
+    updated = consult_graph.invoke(agent_state)
+
+    print("\n===== DEBUG CONSULT OUTPUT =====")
+    print(f"Need more info: {updated.get('need_more_info')}")
+    print(f"Turn count: {updated.get('turn_count')}")
+    print("================================\n")
+
+    assistant_out = updated.get("assistant_output", {}) or {}
+    followup_q = assistant_out.get("followup_question")
+    explanation = assistant_out.get("explanation", "")
+
+    # Convert updated profile back to dict
+    updated_profile = updated.get("patient_profile")
+    if updated_profile:
+        if isinstance(updated_profile, PatientProfile):
+            state["patient_profile"] = updated_profile.model_dump()
+        else:
+            state["patient_profile"] = updated_profile
+
+    state["questions"] = [followup_q] if followup_q else []
+    state["answers"] = [explanation] if explanation else []
+    state["messages"] = updated.get("messages", [])
+    state["turn_count"] = updated.get("turn_count", 1)
+    state["needs_more"] = bool(updated.get("need_more_info"))
+    state["last_question"] = updated.get("last_question")
+
+    return state
+
+
+def followup_node(state: PipelineState) -> PipelineState:
+    logging.info("Follow-up node: waiting for user answer...")
+    return state
+
+
+def personal_care_agent(state: PipelineState) -> PipelineState:
+    logging.info("Personal Care agent running with KG + MedlinePlus...")
+
+    global GLOBAL_STORE
+    
+    # Initialize memory and agent
+    care_llm_agent = create_personal_care_agent(store=GLOBAL_STORE, context_schema=Context)
+    
+    profile_dict = state.get("patient_profile", {})
+    user_query = state.get("user_query", "")
+    passages = state.get("passages", [])
+
+    refs_text = ""
+    if passages:
+        refs_text = "\n".join(f"- {p}" for p in passages[:6])
+
+    user_content = (
+        "Here is the patient's situation.\n\n"
+        f"Original concern:\n{user_query}\n\n"
+        "Patient Profile:\n"
+        f"{json.dumps(profile_dict, indent=2)}\n\n"
+        "Relevant reference snippets from MedlinePlus:\n"
+        f"{refs_text}\n\n"
+        "Please follow your instructions as a Personal Healthcare Coach, "
+        "using the knowledge graph and this context to provide comprehensive recommendations."
+    )
+
+    try:
+        # Create context for the agent
+        patient_id = state.get("patient_id", profile_dict.get("id", "unknown"))
+        context = Context(user_id=patient_id, store=GLOBAL_STORE)
+        
+        result = care_llm_agent.invoke(
+            {"messages": [{"role": "user", "content": user_content}]},
+            config={"configurable": {"context": context}}
+        )
+    except Exception as e:
+        logging.error(f"Personal care agent failed: {e}")
+        state["plan"] = (
+            "Sorry, I had trouble generating a detailed care plan right now. "
+            "Please consider speaking directly with a healthcare professional."
+        )
+        state["warnings"] = ["System error during care planning step."]
+        state["care_details"] = {}
+        return state
+
+    # Extract the assistant's final message text
+    messages = result.get("messages", []) if isinstance(result, dict) else []
+
+    care_text = ""
+    for m in reversed(messages):
+        role = getattr(m, "type", None) or getattr(m, "role", None)
+        if role in ("ai", "assistant"):
+            care_text = m.content if isinstance(m.content, str) else str(m.content)
+            break
+
+    if not care_text and messages:
+        m = messages[-1]
+        care_text = m.content if isinstance(m.content, str) else str(m.content)
+
+    if not care_text:
+        care_text = (
+            "I could not generate a detailed plan, but based on your symptoms, "
+            "please monitor your condition and seek medical help if things worsen."
+        )
+
+    care_details = _parse_care_output(care_text)
+
+    state["plan"] = care_text
+    state["warnings"] = [
+        "This information is not a substitute for professional medical advice.",
+        "Seek urgent help if you experience severe pain, difficulty breathing, chest pain, or persistent/worsening symptoms.",
+    ]
+    state["care_details"] = care_details
+
+    return state
+
+
+def planner_summary_node(state: PipelineState) -> PipelineState:
+    logging.info("Planner summary node running...")
+    summary = (
+        f"Query: {state['user_query']}\n"
+        f"Questions: {state.get('questions')}\n"
+        f"Answers: {state.get('answers')}\n"
+        f"Plan: {state.get('plan')}\n"
+    )
+    history = state.get("history", [])
+    history.append(summary)
+    state["history"] = history
+
+    state["final_output"] = state.get("plan") or "[No care plan was generated.]"
+    return state
+
+
+def route_from_consult(state: PipelineState) -> Literal["followup", "care"]:
+    if state.get("needs_more"):
+        return "followup"
+    else:
+        return "care"
+
+
+# ----------------- Build the graph -----------------
+def build_planner_graph():
+    """Build the complete multi-agent workflow."""
+    workflow = StateGraph(PipelineState)
+    
+    workflow.add_node("patient_intake", patient_intake_node)
+    workflow.add_node("retrieve", retriever_agent)
+    workflow.add_node("consult", consulting_agent)
+    workflow.add_node("followup", followup_node)
+    workflow.add_node("care", personal_care_agent)
+    workflow.add_node("planner_summary", planner_summary_node)
+
+    workflow.set_entry_point("patient_intake")
+    
+    # Route from intake based on profile completion
+    workflow.add_conditional_edges(
+        "patient_intake",
+        route_from_intake,
+        {
+            "retrieve": "retrieve",
+            END: END
+        }
+    )
+    
+    workflow.add_edge("retrieve", "consult")
+
+    workflow.add_conditional_edges(
+        "consult",
+        route_from_consult,
+        {
+            "followup": "followup",
+            "care": "care",
+        }
+    )
+
+    workflow.add_edge("followup", END)
+    workflow.add_edge("care", "planner_summary")
+    workflow.add_edge("planner_summary", END)
+
+    checkpointer = InMemorySaver()
+    return workflow.compile(checkpointer=checkpointer)
+
+
+# ----------------- Console wrapper -----------------
+class PlannerAgent:
+    def __init__(self, graph):
+        self.graph = graph
+        self.state: Optional[PipelineState] = None
+        self.thread_config = {"configurable": {"thread_id": "main_session"}}
+                            
+    def start(self, patient_id: str, query: str):
+        """Start a new conversation with patient ID."""
+        self.state = {
+            "user_query": query,
+            "history": [],
+            "final_output": "",
+            "patient_profile": None,
+            "patient_history": None,
+            "patient_id": patient_id,  # Set patient ID from input
+            "messages": [],
+            "turn_count": 0,
+            "last_question": "",
+            "profile_complete": False,
+            "is_returning_patient": False,
+            "patient_lookup_attempted": False,
+        }
+        
+        out = self.graph.invoke(self.state, self.thread_config)
+        self.state = out
+        return self._analyze(self.state)
+
+    def continue_with_answer(self, answer: str):
+        """Continue conversation with user's answer to follow-up question."""
+        if not self.state:
+            return {"type": "final", "output": "[No active conversation]"}
+
+        # Update state with user's answer
+        msgs = self.state.get("messages", [])
+        msgs.append(HumanMessage(content=answer))
+        self.state["messages"] = msgs
+        self.state["user_query"] = answer  # Update query with the answer
+
+        # Re-run from retrieval
+        out = self.graph.invoke(self.state, self.thread_config)
+        self.state = out
+
+        return self._analyze(self.state)
+
+    def _analyze(self, state: PipelineState):
+        """Analyze state to determine next step."""
+        if state.get("final_output"):
+            return {"type": "final", "output": state["final_output"]}
+
+        questions = state.get("questions") or []
+        answers = state.get("answers") or []
+
+        if questions:
+            explanation = answers[0] if answers else ""
+            return {
+                "type": "followup",
+                "question": questions[0],
+                "explanation": explanation,
+            }
+
+        return {"type": "final", "output": "[No further questions or output.]"}
+
+
+if __name__ == "__main__":
+    print("\n" + "="*70)
+    print("🔵 PERSONAL HEALTH COACH — Multi-Agent System")
+    print("="*70 + "\n")
+    
+    # Initialize global store
+    print("Initializing memory store...")
+    embeddings = OllamaEmbeddings(
+        model="embeddinggemma:300m",
+        base_url="http://127.0.0.1:11434"
+    )
+    
+    GLOBAL_STORE = InMemoryStore(
+        index={
+            "embed": embeddings.embed_documents,
+            "dims": 768,
+        }
+    )
+    print("✓ Memory store initialized\n")
+    
+    # Build graph
+    planner_graph = build_planner_graph()
+    planner = PlannerAgent(planner_graph)
+
+    # Ask for patient ID first
+    print("="*70)
+    print("PATIENT IDENTIFICATION")
+    print("="*70)
+    patient_id = input("\nEnter your Patient ID (or press Enter if you're new): ").strip()
+    
+    # Get health concern
+    print("\n" + "="*70)
+    print("HEALTH CONCERN")
+    print("="*70)
+    user_input = input("\nWhat health concern would you like to discuss today?\nUser: ")
+    
+    # Start conversation with patient ID
+    step = planner.start(patient_id, user_input)
+
+    while True:
+        if step["type"] == "final":
+            print("\n" + "="*70)
+            print("HEALTH RECOMMENDATIONS")
+            print("="*70)
+            print(step["output"])
+            print("="*70)
+            break
+
+        elif step["type"] == "followup":
+            print("\n" + "-"*70)
+            print("CONSULTING AGENT:")
+            print("-"*70)
+            if step.get("explanation"):
+                print(f"\n{step['explanation']}")
+            print(f"\nFollow-up question: {step['question']}")
+            print("-"*70)
+            
+            answer = input("\nYour answer: ")
+            step = planner.continue_with_answer(answer)
+    
+    print("\n" + "="*70)
+    print("Thank you for using the Personal Health Coach! Take care! 💙")
+    print("="*70 + "\n")
