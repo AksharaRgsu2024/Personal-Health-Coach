@@ -9,6 +9,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 import json
 from langchain.agents import create_agent
+from consulting_agent_with_memory import PatientProfile
 from langchain.agents.middleware import wrap_tool_call
 from langgraph.prebuilt import ToolNode
 from langchain_ollama import ChatOllama
@@ -16,7 +17,6 @@ from langgraph.store.memory import InMemoryStore
 from langchain_ollama import OllamaEmbeddings
 from dataclasses import dataclass
 from datetime import datetime
-
 # Demo database credentials
 from dotenv import load_dotenv
 import os
@@ -25,6 +25,10 @@ URI = os.getenv("NEO4J_URI")
 USER = os.getenv("NEO4J_USERNAME")
 PASSWORD = os.getenv("NEO4J_PASSWORD")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Global store reference - will be set by create_personal_care_agent
+_global_store = None
+_global_user_id = None
 
 def schema_text(node_props, rel_props, rels):
     return f"""
@@ -38,13 +42,6 @@ def schema_text(node_props, rel_props, rels):
   Make sure to respect relationship types and directions
   """
 
-class PatientProfile(BaseModel):
-    """Patient profile information"""
-    id: str
-    name: str
-    sex: str
-    age: int = 0
-    symptoms: List[dict] = Field(default_factory=list)
 
 class RetrievedTopic(BaseModel):
     condition: str
@@ -253,183 +250,19 @@ class PatientHistory(BaseModel):
     """Complete patient history including profile and all recommendations"""
     profile: PatientProfile
     recommendations: List[PatientRecommendation] = Field(default_factory=list)
-    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    # created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     last_updated: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
 class Context(TypedDict):
     """Context schema for the agent"""
     user_id: str
-    store: InMemoryStore
 
 
 def initialize_memory():
     """Initialize the in-memory store"""
     in_memory_store = InMemoryStore()
     return in_memory_store
-
-
-@tool
-def save_patient_history(
-    patient_profile: dict,
-    recommendation: dict,
-    runtime: Annotated[Any, "runtime"]
-) -> str:
-    """
-    Save or update patient history with new recommendation.
-    
-    Args:
-        patient_profile: Current patient profile dictionary
-        recommendation: New recommendation to add (dict with date, conditions, recommendations, symptoms)
-        runtime: Tool runtime with store and context
-    
-    Returns:
-        Success message
-    """
-    try:
-        # Check if runtime and context exist
-        if not runtime or not hasattr(runtime, 'context') or runtime.context is None:
-            print("Warning: Runtime context not available, using fallback")
-            return "Error: Runtime context not properly initialized. Cannot save patient history."
-        
-        # Access store and user_id from runtime context
-        context = runtime.context
-        
-        # Handle both dataclass and dict-like access
-        if hasattr(context, 'store'):
-            store = context.store
-        elif isinstance(context, dict):
-            store = context.get('store')
-        else:
-            store = None
-            
-        if hasattr(context, 'user_id'):
-            user_id = context.user_id
-        elif isinstance(context, dict):
-            user_id = context.get('user_id', patient_profile.get("id", "unknown"))
-        else:
-            user_id = patient_profile.get("id", "unknown")
-        
-        if not store:
-            return "Error: Memory store not available in context"
-        
-        namespace = ("PatientDetails",)
-        
-        # Try to get existing history
-        existing = store.get(namespace, user_id)
-        
-        if existing and existing.value:
-            try:
-                history = PatientHistory.model_validate(existing.value)
-            except Exception as e:
-                print(f"Error loading existing history: {e}, creating new")
-                history = PatientHistory(profile=PatientProfile(**patient_profile))
-        else:
-            history = PatientHistory(profile=PatientProfile(**patient_profile))
-        
-        # Update profile with latest information
-        history.profile = PatientProfile(**patient_profile)
-        
-        # Add new recommendation
-        new_recommendation = PatientRecommendation(**recommendation)
-        history.recommendations.append(new_recommendation)
-        history.last_updated = datetime.now().isoformat()
-        
-        # Save to store
-        store.put(namespace, user_id, history.model_dump())
-        
-        print(f"✓ Saved patient history for {user_id}. Total consultations: {len(history.recommendations)}")
-        return f"Successfully saved patient history. Total consultations: {len(history.recommendations)}"
-    
-    except Exception as e:
-        print(f"Error saving patient history: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return f"Error saving patient history: {str(e)}"
-
-
-@tool
-def get_patient_history(runtime: Annotated[Any, "runtime"]) -> str:
-    """
-    Retrieve complete patient history including past symptoms and recommendations.
-    
-    Args:
-        runtime: Tool runtime with store and context
-    
-    Returns:
-        Formatted patient history or message if not found
-    """
-    try:
-        # Check if runtime and context exist
-        if not runtime or not hasattr(runtime, 'context') or runtime.context is None:
-            print("Warning: Runtime context not available")
-            return "No previous patient history found. This appears to be a new patient."
-        
-        # Access store and user_id from runtime context
-        context = runtime.context
-        
-        # Handle both dataclass and dict-like access
-        if hasattr(context, 'store'):
-            store = context.store
-        elif isinstance(context, dict):
-            store = context.get('store')
-        else:
-            store = None
-            
-        if hasattr(context, 'user_id'):
-            user_id = context.user_id
-        elif isinstance(context, dict):
-            user_id = context.get('user_id')
-        else:
-            user_id = None
-        
-        if not store:
-            return "Error: Memory store not available in context"
-        
-        if not user_id:
-            return "Error: User ID not provided in context"
-        
-        namespace = ("PatientDetails",)
-        
-        # Retrieve data from store
-        patient_data = store.get(namespace, user_id)
-        
-        if not patient_data or not patient_data.value:
-            return "No previous patient history found. This appears to be a new patient."
-        
-        history = PatientHistory.model_validate(patient_data.value)
-        
-        # Format the history nicely
-        formatted = f"""
-PATIENT HISTORY SUMMARY
-========================
-Patient ID: {history.profile.id}
-Name: {history.profile.name}
-Sex: {history.profile.sex}
-Age: {history.profile.age}
-Last Updated: {history.last_updated}
-
-CURRENT SYMPTOMS:
-{json.dumps([s for s in history.profile.symptoms], indent=2)}
-
-PAST CONSULTATIONS ({len(history.recommendations)}):
-"""
-        for i, rec in enumerate(history.recommendations, 1):
-            formatted += f"""
---- Consultation {i} ({rec.date}) ---
-Symptoms at time: {', '.join(rec.symptoms_at_time)}
-Possible conditions: {', '.join(rec.possible_conditions)}
-Recommendations: {rec.recommendations[:200]}...
-"""
-        
-        return formatted
-    
-    except Exception as e:
-        print(f"Error retrieving patient history: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return f"Error retrieving patient history: {str(e)}"
-
 
 medical_agent_system_prompt = """
 You are a Personal Healthcare Coach with access to long-term patient memory.
@@ -478,6 +311,127 @@ MEMORY USAGE:
 - Use history to provide continuity of care
 """
 
+# Global store reference - will be set by create_personal_care_agent
+_global_store = None
+_global_user_id = None
+
+#TOOLS
+@tool
+def save_patient_history(
+    patient_profile: dict,
+    recommendation: dict
+) -> str:
+    """
+    Save or update patient history with new recommendation.
+    
+    Args:
+        patient_profile: Current patient profile dictionary
+        recommendation: New recommendation to add (dict with date, conditions, recommendations, symptoms)
+    
+    Returns:
+        Success message
+    """
+    try:
+        store = _global_store
+        user_id = _global_user_id or patient_profile.get("id", "unknown")
+        
+        if not store:
+            return "Error: Memory store not available"
+        
+        namespace = ("PatientDetails",)
+        
+        # Try to get existing history
+        existing = store.get(namespace, user_id)
+        
+        if existing and existing.value:
+            try:
+                history = PatientHistory.model_validate(existing.value)
+            except Exception as e:
+                print(f"Error loading existing history: {e}, creating new")
+                history = PatientHistory(profile=PatientProfile(**patient_profile))
+        else:
+            history = PatientHistory(profile=PatientProfile(**patient_profile))
+        
+        # Update profile with latest information
+        history.profile = PatientProfile(**patient_profile)
+        
+        # Add new recommendation
+        new_recommendation = PatientRecommendation(**recommendation)
+        history.recommendations.append(new_recommendation)
+        history.last_updated = datetime.now().isoformat()
+        
+        # Save to store
+        store.put(namespace, user_id, history.model_dump())
+        
+        print(f"✓ Saved patient history for {user_id}. Total consultations: {len(history.recommendations)}")
+        return f"Successfully saved patient history. Total consultations: {len(history.recommendations)}"
+    
+    except Exception as e:
+        print(f"Error saving patient history: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return f"Error saving patient history: {str(e)}"
+
+
+@tool
+def get_patient_history() -> str:
+    """
+    Retrieve complete patient history including past symptoms and recommendations.
+    
+    Returns:
+        Formatted patient history or message if not found
+    """
+    try:
+        store = _global_store
+        user_id = _global_user_id
+        
+        if not store:
+            return "Error: Memory store not available"
+        
+        if not user_id:
+            return "Error: User ID not provided in context"
+        
+        namespace = ("PatientDetails",)
+        
+        # Retrieve data from store
+        patient_data = store.get(namespace, user_id)
+        
+        if not patient_data or not patient_data.value:
+            return "No previous patient history found. This appears to be a new patient."
+        
+        history = PatientHistory.model_validate(patient_data.value)
+        
+        # Format the history nicely
+        formatted = f"""
+PATIENT HISTORY SUMMARY
+========================
+Patient ID: {history.profile.id}
+Name: {history.profile.name}
+Sex: {history.profile.sex}
+Age: {history.profile.age}
+Last Updated: {history.last_updated}
+
+CURRENT SYMPTOMS:
+{json.dumps([s for s in history.profile.symptoms], indent=2)}
+
+PAST CONSULTATIONS ({len(history.recommendations)}):
+"""
+        for i, rec in enumerate(history.recommendations, 1):
+            formatted += f"""
+--- Consultation {i} ({rec.date}) ---
+Symptoms at time: {', '.join(rec.symptoms_at_time)}
+Possible conditions: {', '.join(rec.possible_conditions)}
+Recommendations: {rec.recommendations[:200]}...
+"""
+        
+        return formatted
+    
+    except Exception as e:
+        print(f"Error retrieving patient history: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return f"Error retrieving patient history: {str(e)}"
+
 
 def create_personal_care_agent(store: InMemoryStore, context_schema=Context):
     """
@@ -485,18 +439,23 @@ def create_personal_care_agent(store: InMemoryStore, context_schema=Context):
     
     Args:
         store: InMemoryStore instance for patient data persistence
-        context_schema: Schema for context (includes user_id and store)
+        context_schema: Schema for context (includes user_id)
     
     Returns:
-        Agent graph that can be invoked with messages
+        Compiled agent graph with store
     """
+    # Set global store reference so tools can access it
+    global _global_store
+    _global_store = store
+    
+    # create_agent returns a compiled graph
     agent = create_agent(
         model=llm_model,
         tools=[query_medical_knowledge_graph, get_patient_history, save_patient_history],
         system_prompt=medical_agent_system_prompt,
-        store=store,
         context_schema=context_schema
     )
+    
     return agent
 
 
@@ -518,6 +477,11 @@ def run_personal_care_agent(
     Returns:
         Care recommendations as string
     """
+    # Set global user_id so tools can access it
+    global _global_user_id
+    patient_id = patient_profile.get("id", "unknown")
+    _global_user_id = patient_id
+    
     # Create agent
     agent = create_personal_care_agent(store=store, context_schema=Context)
     
@@ -543,20 +507,15 @@ Use the knowledge graph to find relevant medical conditions and provide evidence
 """
     
     try:
-        # Create context with user_id and store - pass as DICT not TypedDict instance
-        patient_id = patient_profile.get("id", "unknown")
-        
-        # Pass context as a dictionary in the config
+        # Pass context in the initial state
         result = agent.invoke(
-            {"messages": [{"role": "user", "content": user_content}]},
-            config={
-                "configurable": {
-                    "context": {
-                        "user_id": patient_id,
-                        "store": store
-                    }
+            {
+                "messages": [{"role": "user", "content": user_content}],
+                "context": {
+                    "user_id": patient_id
                 }
-            }
+            },
+            config={"configurable": {}}
         )
         
         # Extract the final response
@@ -602,6 +561,10 @@ However, based on your symptoms, I recommend:
 
 Please remember this is not professional medical advice. Always consult with a healthcare provider for proper diagnosis and treatment.
 """
+    
+    finally:
+        # Clear global state after invocation
+        _global_user_id = None
 
 
 if __name__ == "__main__":
@@ -619,13 +582,13 @@ if __name__ == "__main__":
         "sex": "Male",
         "age": 35,
         "symptoms": [
-            {"description": "dizziness and trouble balancing", "severity": "moderate"},
-            {"description": "ringing in ears", "severity": "mild"}
+            {"description": "fever", "severity": "moderate"},
+            {"description": "cough", "severity": "mild"}
         ]
     }
     
-    test_query = "I have dizziness and headache"
-    test_passages = ["Dizziness in elderly people..."]
+    test_query = "I have fever and cough for 3 days"
+    test_passages = ["Fever is a common symptom of infection..."]
     
     response = run_personal_care_agent(
         test_profile,
