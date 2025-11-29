@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 import json
 from langchain.agents import create_agent
-from consulting_agent_with_memory import PatientProfile
+from . consulting_agent_with_memory import PatientProfile
 from langchain.agents.middleware import wrap_tool_call
 from langgraph.prebuilt import ToolNode
 from langchain_ollama import ChatOllama
