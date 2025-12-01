@@ -160,9 +160,9 @@ def consulting_agent_node(state: AgentState) -> AgentState:
         except Exception as e:
             print(f"Profile validation error: {e}")
             # Create default profile if validation fails
-            patient_profile = PatientProfile(id="", name="", sex="", symptoms=[])
+            patient_profile = PatientProfile(id="", name="", sex="", age=0, symptoms=[])
     else:
-        patient_profile = PatientProfile(id="", name="", sex="", symptoms=[])
+        patient_profile = PatientProfile(id="", name="", sex="", age=0, symptoms=[])
 
     retrieved_docs = state.get("retrieved_docs") or []
     messages: List[BaseMessage] = state.get("messages") or []

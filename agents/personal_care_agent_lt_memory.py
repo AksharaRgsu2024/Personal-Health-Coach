@@ -250,7 +250,7 @@ class PatientHistory(BaseModel):
     """Complete patient history including profile and all recommendations"""
     profile: PatientProfile
     recommendations: List[PatientRecommendation] = Field(default_factory=list)
-    # created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     last_updated: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -355,14 +355,20 @@ def save_patient_history(
         # Update profile with latest information
         history.profile = PatientProfile(**patient_profile)
         
+        # **FIX: Convert list to string if needed**
+        recommendation_copy = recommendation.copy()
+        if "recommendations" in recommendation_copy and isinstance(recommendation_copy["recommendations"], list):
+            # Join list items with newlines or bullet points
+            recommendation_copy["recommendations"] = "\n".join(recommendation_copy["recommendations"])
+        
         # Add new recommendation
-        new_recommendation = PatientRecommendation(**recommendation)
+        new_recommendation = PatientRecommendation(**recommendation_copy)
         history.recommendations.append(new_recommendation)
         history.last_updated = datetime.now().isoformat()
         
         # Save to store
         store.put(namespace, user_id, history.model_dump())
-        
+
         print(f"✓ Saved patient history for {user_id}. Total consultations: {len(history.recommendations)}")
         return f"Successfully saved patient history. Total consultations: {len(history.recommendations)}"
     
@@ -371,7 +377,6 @@ def save_patient_history(
         import traceback
         traceback.print_exc()
         return f"Error saving patient history: {str(e)}"
-
 
 @tool
 def get_patient_history() -> str:
