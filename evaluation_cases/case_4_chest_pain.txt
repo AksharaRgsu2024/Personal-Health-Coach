@@ -1,0 +1,55 @@
+======================================================================
+HEALTH RECOMMENDATIONS
+======================================================================
+**PATIENT CONTEXT**
+- **Patient:** Erika Steward (ID P‑ERIKAS‑202512010302)
+- **Age/Sex:** 42 y, female
+- **Visit History:** First recorded visit. No prior conditions or recommendations in the system.
+- **Current Symptom:** Shortness of breath lasting ~1 week.
+
+**CURRENT SYMPTOMS ANALYSIS**
+- Onset: One week ago, progressive shortness of breath.
+- No accompanying chest pain, fever, cough, or orthopnea reported.
+- No known triggers or exacerbating factors mentioned.
+
+**POSSIBLE CONDITIONS**
+| Likelihood | Condition | Key Features | Why it fits |
+|------------|-----------|--------------|-------------|
+| **Asthma** | Variable airflow obstruction | Wheezing, reversible obstruction on spirometry | Common in adults, can present with isolated dyspnea |
+| **Heart‑related causes** (e.g., heart failure, arrhythmia) | Reduced cardiac output | Dyspnea, fatigue, possible edema | Heart failure can manifest as exertional dyspnea |
+| **Anxiety / panic** | Hyperventilation, chest tightness | Rapid breathing, anxiety, no objective lung disease | Anxiety is a frequent cause of unexplained dyspnea |
+| **Pulmonary hypertension** | Elevated pulmonary arterial pressure | Progressive dyspnea, may be silent initially | Rare but serious; requires evaluation |    
+| **Respiratory infection** (e.g., viral bronchitis) | Inflammation, mucus production | Recent upper‑respiratory symptoms, fever | Could cause transient dyspnea |
+
+**LIFESTYLE RECOMMENDATIONS**
+1. **Symptom Diary** – Record daily breathing difficulty, triggers, activity level, and any associated symptoms.
+2. **Avoid Triggers** – Stay away from smoke, strong odors, cold air, and allergens.
+3. **Breathing Exercises** – Practice diaphragmatic breathing or pursed‑lip breathing to improve ventilation.
+4. **Hydration & Nutrition** – Keep well‑hydrated; maintain a balanced diet to support overall health.
+5. **Stress Management** – Incorporate relaxation techniques (mindfulness, gentle yoga) to reduce anxiety‑related dyspnea.
+6. **Physical Activity** – Gentle walking or low‑impact exercise as tolerated; avoid overexertion until evaluated.
+
+**POSSIBLE TREATMENTS / EVALUATION**
+| Step | Action | Rationale |
+|------|--------|-----------|
+| 1 | **Spirometry** | Detects reversible airflow limitation (asthma). |
+| 2 | **ECG & Chest X‑ray** | Screens for cardiac or pulmonary structural causes. |
+| 3 | **Pulse Oximetry** | Quick assessment of oxygen saturation at rest and during exertion. |
+| 4 | **Referral to Pulmonology / Cardiology** | If tests are abnormal or symptoms persist. |
+| 5 | **Medication Trial** (if indicated) | Short‑acting bronchodilator for asthma; anxiolytics for anxiety. |
+| 6 | **Follow‑up** | Re‑evaluate after 2–4 weeks or sooner if symptoms worsen. |
+
+**COMPARISON TO PAST**
+- This is Erika’s first recorded visit; no prior conditions or treatments to compare.
+
+**NEXT STEPS**
+- **Schedule an appointment** with your primary care provider within the next 7–10 days.
+- Bring the symptom diary and any recent health changes.
+- If you experience sudden chest pain, fainting, severe shortness of breath, or swelling, seek emergency care immediately.
+
+**REFERENCES**
+- MedlinePlus: “Shortness of breath” – <https://medlineplus.gov/shortnessofbreath>
+- MedlinePlus: “Asthma” – <https://medlineplus.gov/asthma>
+- MedlinePlus: “Heart failure” – <https://medlineplus.gov/heartfailure>
+- MedlinePlus: “Anxiety” – <https://medlineplus.gov/anxiety>
+- MedlinePlus: “Pulmonary hypertension” – <https://medlineplus.gov/pulmonaryhypertension>

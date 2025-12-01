@@ -7,7 +7,8 @@ import sqlite3
 import json
 import re
 import logging
-from typing import TypedDict, List, Any, Literal, Optional
+from typing_extensions import TypedDict
+from typing import List, Any, Literal, Optional
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from datetime import datetime
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.checkpoint.sqlite import SqliteSaver
+# from langgraph.checkpoint.sqlite import SqliteSaver
 import sqlite3
 import pickle
 
@@ -35,8 +36,8 @@ GLOBAL_STORE: Optional[InMemoryStore] = None
 GLOBAL_DB: Optional[sqlite3.Connection] = None
 
 # Connect to an SQLite database (creates the file if it doesn't exist)
-conn = sqlite3.connect("langgraph_memory.db")
-memory = SqliteSaver(conn)
+# conn = sqlite3.connect("langgraph_memory.db")
+# memory = SqliteSaver(conn)
 
 @dataclass
 class Context:

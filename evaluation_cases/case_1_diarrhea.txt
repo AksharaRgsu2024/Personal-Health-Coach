@@ -1,0 +1,90 @@
+======================================================================
+HEALTH RECOMMENDATIONS
+======================================================================
+**PATIENT CONTEXT**
+- **Name:** Saud Ahmed
+- **Age:** 28 years
+- **Sex:** Male
+- **Visit status:** First recorded visit (no prior consultations in the system).
+- **History:** No past medical or medication history is stored; this is the first encounter.
+
+---
+
+**CURRENT SYMPTOMS ANALYSIS**
+- **Duration:** 1 day
+- **Primary complaints:**
+  - Increased frequency of bowel movements/excretions (diarrhea)
+  - Abdominal pain/tummy aches
+- **Severity:** Not specified; patient reports “unknown” severity.
+- **Associated symptoms:** None reported (no fever, blood in stool, vomiting, weight loss, etc.).
+
+---
+
+**POSSIBLE CONDITIONS** *(based on symptom cluster and medical knowledge)*
+
+| Likely diagnosis | Why it fits | Key distinguishing features |
+|------------------|-------------|-----------------------------|
+| **Acute gastroenteritis** | Sudden onset of diarrhea and abdominal pain; common in adults after food or water exposure. | Often accompanied by nausea, vomiting, low‑grade fever; resolves within 3–5 days. |
+| **Irritable bowel syndrome (IBS)** | Chronic abdominal pain with altered bowel habits; can flare up suddenly. | Pain improves with bowel movements; no fever or blood; usually >6 months of symptoms. |
+| **Food intolerance or allergy** | Certain foods can trigger rapid bowel movements and cramping. | Symptoms appear shortly after ingestion of trigger food; no systemic signs. |
+| **Traveler’s diarrhea / bacterial infection** | If recent travel or exposure to contaminated food/water. | Often watery stools, possible cramps, sometimes fever. |
+
+---
+
+**LIFESTYLE RECOMMENDATIONS**
+
+1. **Hydration** – Sip clear fluids (water, oral rehydration solution, broth).
+2. **Dietary adjustments** –
+   - Avoid spicy, fatty, fried, and high‑fiber foods until symptoms improve.
+   - Reintroduce bland foods (rice, bananas, toast, applesauce) gradually.
+3. **Probiotics** – Consider a probiotic supplement or yogurt with live cultures to help restore gut flora.
+4. **Hand hygiene** – Wash hands thoroughly with soap and water, especially before meals and after bathroom use.
+5. **Avoid alcohol and caffeine** – These can worsen diarrhea.
+6. **Monitor stool** – Note color, consistency, presence of blood or mucus.
+
+---
+
+**POSSIBLE TREATMENTS**
+
+| Option | When to use | Notes |
+|--------|-------------|-------|
+| **Oral rehydration solution (ORS)** | Every time you have a bowel movement or feel thirsty. | Prevents dehydration; follow package instructions. |
+| **Over‑the‑counter antidiarrheal (e.g., loperamide)** | If diarrhea is frequent (>3 times/day) and not accompanied by fever or blood. | Do **not** use if you suspect bacterial infection with fever or bloody stools. |
+| **Antibiotics** | Only if a bacterial infection is confirmed (e.g., positive stool culture) or if symptoms persist >3 days with fever. | Requires prescription. |
+| **Prescription medications** | For IBS (e.g., antispasmodics, low‑dose tricyclic antidepressants) if symptoms recur chronically. | Not indicated for acute episode. |
+| **Medical evaluation** | If you develop: fever >38 °C, blood/mucus in stool, severe abdominal pain, signs of dehydration (dry mouth, dizziness, decreased urine). | Seek urgent care or ER. |
+
+---
+
+**COMPARISON TO PAST**
+- This is Saud’s first recorded visit; no prior symptom patterns or chronic conditions are available.
+- Future visits will allow us to track recurrence, duration, and response to interventions.
+
+---
+
+**NEXT STEPS**
+
+1. **Self‑monitor** for the next 48–72 hours.
+2. **Follow the lifestyle and OTC recommendations** above.
+3. **Seek medical care** if:
+   - Symptoms last >3 days.
+   - Fever >38 °C develops.
+   - Blood or mucus appears in stool.
+   - Severe abdominal pain or signs of dehydration occur.
+
+---
+
+**REFERENCES**
+
+- MedlinePlus: “Diarrhea” – <https://medlineplus.gov/diarrhea.html>
+- MedlinePlus: “Constipation” – <https://medlineplus.gov/constipation.html>
+- MedlinePlus: “Irritable Bowel Syndrome” – <https://medlineplus.gov/ibs.html>
+- MedlinePlus: “Oral Rehydration Solution” – <https://medlineplus.gov/ors.html>
+
+*(These URLs were extracted from the reference snippets provided and are consistent with the knowledge graph’s content.)*
+
+---
+
+**Disclaimer**
+This information is for educational purposes only and is **not** a substitute for professional medical advice, diagnosis, or treatment. If you have concerns about your health, please contact a qualified healthcare provider.
+======================================================================

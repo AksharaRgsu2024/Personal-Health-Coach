@@ -1,4 +1,5 @@
-from typing import List, Dict, Any, TypedDict
+from typing_extensions import TypedDict
+from typing import List, Dict, Any
 from datetime import date
 from pydantic import BaseModel, TypeAdapter, field_validator
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
