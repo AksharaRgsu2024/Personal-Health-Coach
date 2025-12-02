@@ -11,6 +11,15 @@ import health_coach_main as hc
 from agents.consulting_agent_with_memory import PatientProfile
 from langchain_core.messages import HumanMessage
 
+#Session state
+# Initialize session state variables if they don't exist
+if "graph_state" not in st.session_state:
+    st.session_state["graph_state"] = None
+if "step" not in st.session_state:
+    st.session_state["step"] = {"type": "", "output": ""}
+if "patient_message" not in st.session_state:
+    st.session_state["patient_message"] = ""
+
 
 # ============================================================
 # 1) BACKEND INITIALIZATION — USES DB_PATH, GLOBAL_STORE
@@ -35,6 +44,8 @@ def init_backend():
     if hc.GLOBAL_STORE is None:
         hc.GLOBAL_STORE = hc.load_memory_store_from_db(hc.GLOBAL_DB)
 
+    #4) Load embedding model for semantic search
+    hc.load_embedding_model()
     # 4) LangGraph workflow
     graph = hc.build_planner_graph()
     return graph
@@ -150,8 +161,8 @@ st.markdown(
     /* Make main area wider and centered */
     .block-container {
         max-width: 1200px;
-        padding-top: 1.5rem;
-        padding-bottom: 3rem;
+        padding-top: 0.1rem;
+        padding-bottom: 2rem;
         margin: auto;
     }
 
@@ -178,7 +189,7 @@ st.markdown(
     /* Hero card */
     .hero-card {
         border-radius: 24px;
-        padding: 1.4rem 1.6rem 1.6rem 1.6rem;
+        padding: 0.5rem 1.6rem 1.6rem 1.6rem;
         background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 40%, #ec4899 100%);
         color: #f9fafb;
         box-shadow: 0 18px 40px rgba(15, 23, 42, 0.45);
@@ -272,7 +283,7 @@ st.markdown(
     }
     .result-body {
         padding:1.1rem 1.3rem 1.15rem 1.3rem;
-        max-height: 520px;
+        max-height: 1024px;
         overflow-y:auto;
         background: linear-gradient(to bottom right, #fff7fb, #fefce8);
     }
@@ -294,6 +305,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
 
 
 # ============================================================
@@ -343,112 +355,153 @@ with st.sidebar:
 # ============================================================
 # 5) MAIN HEALTH CONCERN INPUT
 # ============================================================
-st.subheader("Describe your health concern")
+tab1, tab2 = st.tabs(["Consulting Converstation", "Personal Care Plan"])
 
-user_query = st.text_area(
-    "What would you like to discuss today?",
-    height=140,
-    placeholder="Example: I've had a cough and mild fever for 3 days…",
-)
+with tab1:
+    st.subheader("Describe your health concern")
 
-col1, col2 = st.columns([1, 1])
-with col1:
-    start_btn = st.button("🩺 Start / Restart consultation", type="primary")
-with col2:
-    clear_btn = st.button("🧹 Clear conversation")
+    user_query = st.text_area(
+        "What would you like to discuss today?",
+        height=140,
+        placeholder="Example: I've had a cough and mild fever for 3 days…",
+    )
 
-
-# Keep full LangGraph state between turns
-if "graph_state" not in st.session_state:
-    st.session_state["graph_state"] = None
-if "step" not in st.session_state:
-    st.session_state["step"] = None
-if "patient_message" not in st.session_state:
-    st.session_state["patient_message"] = ""
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        start_btn = st.button("🩺 Start / Restart consultation", type="primary")
+    with col2:
+        clear_btn = st.button("🧹 Clear conversation")
 
 
-if clear_btn:
-    st.session_state["graph_state"] = None
-    st.session_state["step"] = None
-    st.session_state["patient_message"] = ""
-    st.rerun()
 
-
-# ============================================================
-# 6) FIRST TURN: RUN FULL PIPELINE (INCLUDING YOUR NODES)
-# ============================================================
-if start_btn:
-    if not user_query.strip():
-        st.warning("Please describe your health concern first.")
-    else:
-        (
-            profile_dict,
-            history_dict,
-            final_patient_id,
-            is_returning,
-            msg,
-        ) = load_or_create_patient(
-            patient_id_input,
-            name_input,
-            sex_input,
-            age_input,
-        )
-
-        st.session_state["patient_message"] = msg
-
-        # We simulate that patient_intake_node has already finished,
-        # by giving profile + setting profile_complete=True.
-        initial_state = {
-            "user_query": user_query.strip(),
-            "history": [],
-            "final_output": "",
-            "patient_profile": profile_dict,
-            "patient_history": history_dict,
-            "patient_id": final_patient_id,
-            "messages": [],
-            "turn_count": 0,
-            "last_question": "",
-            "profile_complete": True,
-            "is_returning_patient": is_returning,
-            "patient_lookup_attempted": True,
-        }
-
-        config = {"configurable": {"thread_id": f"web-{final_patient_id}"}}
-        out_state = graph.invoke(initial_state, config)
-
-        st.session_state["graph_state"] = out_state
-        st.session_state["step"] = analyze_state(out_state)
+    if clear_btn:
+        st.session_state["graph_state"] = None
+        st.session_state["step"] = {"type": "", "output": ""}
+        st.session_state["patient_message"] = ""
         st.rerun()
 
 
-# ============================================================
-# 7) RENDER CURRENT STEP (FINAL OR FOLLOW-UP)
-# ============================================================
-step = st.session_state.get("step")
-state = st.session_state.get("graph_state")
+    # ============================================================
+    # 6) FIRST TURN: RUN FULL PIPELINE (INCLUDING YOUR NODES)
+    # ============================================================
+    if start_btn:
+        if not user_query.strip():
+            st.warning("Please describe your health concern first.")
+        else:
+            (
+                profile_dict,
+                history_dict,
+                final_patient_id,
+                is_returning,
+                msg,
+            ) = load_or_create_patient(
+                patient_id_input,
+                name_input,
+                sex_input,
+                age_input,
+            )
 
-# Show message from load_or_create_patient (loaded or created)
-if st.session_state.get("patient_message"):
-    st.info(st.session_state["patient_message"])
+            st.session_state["patient_message"] = msg
 
-if step is not None and state is not None:
+            # We simulate that patient_intake_node has already finished,
+            # by giving profile + setting profile_complete=True.
+            initial_state = {
+                "user_query": user_query.strip(),
+                "history": [],
+                "final_output": "",
+                "patient_profile": profile_dict,
+                "patient_history": history_dict,
+                "patient_id": final_patient_id,
+                "messages": [],
+                "turn_count": 0,
+                "last_question": "",
+                "profile_complete": True,
+                "is_returning_patient": is_returning,
+                "patient_lookup_attempted": True,
+            }
 
+            config = {"configurable": {"thread_id": f"web-{final_patient_id}"}}
+            out_state = graph.invoke(initial_state, config)
+
+            st.session_state["graph_state"] = out_state
+            st.session_state["step"] = analyze_state(out_state)
+            st.rerun()
+
+
+    # ============================================================
+    # 7) RENDER CURRENT STEP (FINAL OR FOLLOW-UP)
+    # ============================================================
+    step = st.session_state.get("step")
+    state = st.session_state.get("graph_state")
+
+    # Show message from load_or_create_patient (loaded or created)
+    if st.session_state.get("patient_message"):
+        st.info(st.session_state["patient_message"])
+
+    if step is not None and state is not None:
+        # st.session_state["agent_step"] = step["type"]
+
+        # ---------- FOLLOW-UP QUESTION ----------
+        if step["type"] == "followup":
+            st.markdown("### 🧑‍⚕️ Follow-up question from consulting agent")
+
+            if step.get("explanation"):
+                with st.expander("Why I'm asking this"):
+                    st.write(step["explanation"])
+
+            st.write(f"**Question:** {step['question']}")
+
+            followup_answer = st.text_area(
+                "Your answer",
+                key="followup_answer",
+                placeholder="Type your reply here…",
+            )
+            submit_followup = st.button("➡️ Send answer")
+
+            if submit_followup:
+                if not followup_answer.strip():
+                    st.warning("Please type an answer before submitting.")
+                else:
+                    # Mirror PlannerAgent.continue_with_answer()
+                    msgs = state.get("messages", [])
+                    msgs.append(HumanMessage(content=followup_answer.strip()))
+                    state["messages"] = msgs
+                    state["user_query"] = followup_answer.strip()
+
+                    config = {
+                        "configurable": {
+                            "thread_id": f"web-{state.get('patient_id', 'noid')}"
+                        }
+                    }
+                    new_state = graph.invoke(state, config)
+                    st.session_state["graph_state"] = new_state
+                    st.session_state["step"] = analyze_state(new_state)
+                    st.rerun()
+        elif st.session_state.get("step")["type"]  == "final":
+            st.markdown("### ✅ Consultation complete, personal health plan ready!")
+            
+# st.caption(
+#     "Front-end strictly uses your health_coach_main.py pipeline "
+#     "(semantic_search, consulting_agent, personal_care_agent, DB + memory_store)."
+# )
     # ---------- FINAL PLAN ----------
-    if step["type"] == "final":
-        st.markdown("### 🔍 Personalized health guidance")
+with tab2:
+    st.markdown("### 💊🌡️🩺 Personalized health guidance")
+    if st.session_state.get("graph_state") is not None and st.session_state.get("step")["type"]  == "final":
+        
         st.markdown(
             f"""
             <div class="result-card">
-              <div class="result-header">
+                <div class="result-header">
                 <div class="result-header-left">
-                  <span>🩺 Personalized Plan</span>
-                  <span class="result-badge">Auto-generated from your multi-agent pipeline</span>
+                    <span>🩺 Personalized Plan</span>
+                    <span class="result-badge">Auto-generated from your multi-agent pipeline</span>
                 </div>
                 <span>MedlinePlus • Evidence-informed</span>
-              </div>
-              <div class="result-body">
+                </div>
+                <div class="result-body">
                 <pre>{step['output']}</pre>
-              </div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -462,45 +515,3 @@ if step is not None and state is not None:
         # Save memory store to your DB (same as console main)
         if hc.GLOBAL_STORE is not None and hc.GLOBAL_DB is not None:
             hc.save_memory_store_to_db(hc.GLOBAL_STORE, hc.GLOBAL_DB)
-
-    # ---------- FOLLOW-UP QUESTION ----------
-    elif step["type"] == "followup":
-        st.markdown("### 🧑‍⚕️ Follow-up question from consulting agent")
-
-        if step.get("explanation"):
-            with st.expander("Why I'm asking this"):
-                st.write(step["explanation"])
-
-        st.write(f"**Question:** {step['question']}")
-
-        followup_answer = st.text_area(
-            "Your answer",
-            key="followup_answer",
-            placeholder="Type your reply here…",
-        )
-        submit_followup = st.button("➡️ Send answer")
-
-        if submit_followup:
-            if not followup_answer.strip():
-                st.warning("Please type an answer before submitting.")
-            else:
-                # Mirror PlannerAgent.continue_with_answer()
-                msgs = state.get("messages", [])
-                msgs.append(HumanMessage(content=followup_answer.strip()))
-                state["messages"] = msgs
-                state["user_query"] = followup_answer.strip()
-
-                config = {
-                    "configurable": {
-                        "thread_id": f"web-{state.get('patient_id', 'noid')}"
-                    }
-                }
-                new_state = graph.invoke(state, config)
-                st.session_state["graph_state"] = new_state
-                st.session_state["step"] = analyze_state(new_state)
-                st.rerun()
-
-st.caption(
-    "Front-end strictly uses your health_coach_main.py pipeline "
-    "(semantic_search, consulting_agent, personal_care_agent, DB + memory_store)."
-)

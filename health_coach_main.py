@@ -1,6 +1,6 @@
 from pathlib import Path
 import os
-from vector_db import semantic_search
+from vector_db import semantic_search, load_embedding_model
 from agents.consulting_agent_with_memory import build_consulting_agent_graph, PatientProfile
 from agents.personal_care_agent_lt_memory import PatientRecommendation, PatientHistory, create_personal_care_agent, PatientHistory, run_personal_care_agent
 import sqlite3

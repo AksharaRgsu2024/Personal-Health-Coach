@@ -23,8 +23,10 @@ client = QdrantClient(
     api_key=QDRANT_API_KEY,
 )
 
-EMB_MODEL_NAME = "all-MiniLM-L6-v2"
-_emb_model = SentenceTransformer(EMB_MODEL_NAME)
+def load_embedding_model():
+    global _emb_model
+    EMB_MODEL_NAME = "all-MiniLM-L6-v2"
+    _emb_model = SentenceTransformer(EMB_MODEL_NAME)
 
 
 # ----------------- Helper cleaner -----------------
@@ -75,7 +77,7 @@ def process_data():
 
     df["text"] = df[text_col].apply(_clean_text)
 
-
+    
     # ================================================================
     # 2) CHUNK THE TEXT
     # ================================================================
@@ -102,6 +104,7 @@ def process_data():
     return corpus
 
 def embed_upsert_qdrant(corpus):
+    
     # ================================================================
     # 3) EMBEDDINGS (loaded once when the module imports)
     # ================================================================

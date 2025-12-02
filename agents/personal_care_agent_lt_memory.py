@@ -315,7 +315,7 @@ MEMORY USAGE:
 _global_store = None
 _global_user_id = None
 
-#TOOLS
+#MEMORY TOOLS
 @tool
 def save_patient_history(
     patient_profile: dict,
