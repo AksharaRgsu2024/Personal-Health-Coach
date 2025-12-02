@@ -1,7 +1,7 @@
 # app.py — Streamlit front-end for YOUR health_coach_main.py
 
 from pathlib import Path
-import sqlite3  # ✅ added for custom DB connection
+import sqlite3
 
 import streamlit as st
 
@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 
 
 # ============================================================
-# 1) BACKEND INITIALIZATION — USES  DB_PATH, GLOBAL_STORE
+# 1) BACKEND INITIALIZATION — USES DB_PATH, GLOBAL_STORE
 # ============================================================
 @st.cache_resource
 def init_backend():
@@ -35,7 +35,7 @@ def init_backend():
     if hc.GLOBAL_STORE is None:
         hc.GLOBAL_STORE = hc.load_memory_store_from_db(hc.GLOBAL_DB)
 
-    # 4) LangGraph workflow (patient_intake -> retrieve -> consult -> care -> planner_summary)
+    # 4) LangGraph workflow
     graph = hc.build_planner_graph()
     return graph
 
@@ -74,13 +74,7 @@ def load_or_create_patient(
     age_str: str,
 ):
     """
-    Follows the same idea as patient_intake_node:
-
-    - If patient_id provided and found in GLOBAL_STORE:
-        -> returning patient; use that profile/history.
-    - Else:
-        -> create a new PatientProfile using your generate_patient_id()
-           and save_new_patient_to_store().
+    Follows the same idea as patient_intake_node.
     """
     store = hc.GLOBAL_STORE
     typed_patient_id = (typed_patient_id or "").strip()
@@ -141,49 +135,189 @@ def load_or_create_patient(
 
 
 # ============================================================
-# 3) STREAMLIT PAGE LAYOUT
+# 3) STREAMLIT PAGE LAYOUT & STYLES
 # ============================================================
 st.set_page_config(
     page_title="Personal Health Coach",
     page_icon="💙",
-    layout="centered",
+    layout="wide",
 )
 
-# Simple styling
+# ---- Custom CSS: layout + colors + cards ----
 st.markdown(
     """
     <style>
-    .main { background-color:#fff1f2; color:#111827; }
+    /* Make main area wider and centered */
+    .block-container {
+        max-width: 1200px;
+        padding-top: 1.5rem;
+        padding-bottom: 3rem;
+        margin: auto;
+    }
 
+    .main {
+        background: radial-gradient(circle at top left, #fee2e2 0, #fff1f2 35%, #fdf2f8 70%, #ffffff 100%);
+        color:#111827;
+    }
+
+    /* Buttons */
+    .stButton>button {
+        border-radius: 999px;
+        padding: 0.55rem 1.3rem;
+        font-weight: 600;
+        border: none;
+        box-shadow: 0 6px 18px rgba(248, 113, 167, 0.4);
+        background: linear-gradient(135deg, #fb7185, #ec4899);
+        color: white;
+    }
+    .stButton>button:hover {
+        filter: brightness(1.03);
+        transform: translateY(-1px);
+    }
+
+    /* Hero card */
+    .hero-card {
+        border-radius: 24px;
+        padding: 1.4rem 1.6rem 1.6rem 1.6rem;
+        background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 40%, #ec4899 100%);
+        color: #f9fafb;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.45);
+        margin-bottom: 1.4rem;
+        position: relative;
+        overflow: hidden;
+    }
+    .hero-pill {
+        display:inline-block;
+        padding:0.18rem 0.8rem;
+        border-radius:999px;
+        font-size:0.75rem;
+        border:1px solid rgba(248,250,252,0.65);
+        background:rgba(15,23,42,0.2);
+        color:#e0f2fe;
+        margin-bottom:0.5rem;
+    }
+    .hero-title {
+        font-size:1.7rem;
+        font-weight:700;
+        margin:0.1rem 0 0.35rem 0;
+        display:flex;
+        align-items:center;
+        gap:0.4rem;
+    }
+    .hero-desc {
+        font-size:0.9rem;
+        max-width: 680px;
+        opacity:0.96;
+    }
+    .hero-heart {
+        font-size:1.9rem;
+    }
+
+    /* Decorative bubble in hero */
+    .hero-card::after {
+        content:"";
+        position:absolute;
+        right:-60px;
+        top:-40px;
+        width:220px;
+        height:220px;
+        border-radius:999px;
+        background:radial-gradient(circle at 30% 30%, rgba(248,250,252,0.85), transparent 60%);
+        opacity:0.35;
+    }
+
+    /* Generic pink card */
     .card {
         border-radius: 16px;
         padding: 1.2rem 1.4rem;
-        background: #fdf2f8;           /* light pink card */
-        border: 1px solid #f9a8d4;     /* soft pink border */
-        box-shadow: 0 10px 30px rgba(244, 114, 182, 0.45);
+        background: #fdf2f8;
+        border: 1px solid #f9a8d4;
+        box-shadow: 0 10px 30px rgba(244, 114, 182, 0.35);
     }
 
     .card h2, .card p {
         color:#111827;
     }
 
-    .pill {
-        display:inline-block;
-        padding:0.18rem 0.7rem;
-        border-radius:999px;
-        font-size:0.75rem;
-        border:1px solid #ec4899;
-        background:#f9a8d4;
-        color:#831843;
+    /* Result card with header */
+    .result-card {
+        margin-top:0.5rem;
+        border-radius: 18px;
+        padding: 0;
+        overflow:hidden;
+        border:1px solid #fecaca;
+        box-shadow: 0 18px 45px rgba(248, 113, 167, 0.45);
+        background: #fff7fb;
     }
+    .result-header {
+        padding:0.75rem 1.2rem;
+        background: linear-gradient(135deg, #f97316, #fb7185, #ec4899);
+        color:white;
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:0.8rem;
+    }
+    .result-header-left {
+        display:flex;
+        align-items:center;
+        gap:0.6rem;
+    }
+    .result-badge {
+        font-size:0.75rem;
+        padding:0.08rem 0.6rem;
+        border-radius:999px;
+        background:rgba(15,23,42,0.2);
+        border:1px solid rgba(248,250,252,0.6);
+    }
+    .result-body {
+        padding:1.1rem 1.3rem 1.15rem 1.3rem;
+        max-height: 520px;
+        overflow-y:auto;
+        background: linear-gradient(to bottom right, #fff7fb, #fefce8);
+    }
+    .result-body pre {
+        white-space:pre-wrap;
+        font-family:system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+        font-size:0.9rem;
+        color:#111827;
+    }
+
+    /* make Streamlit alerts softer */
+    div[data-testid="stAlert"] {
+        border-radius: 14px;
+        border: 1px solid #bfdbfe;
+        background: #eff6ff;
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+
 # ============================================================
-# 4) PATIENT INFO (MIRRORS patient_intake_node QUESTIONS)
+# 4) HERO CARD + PATIENT INFO (SIDEBAR)
 # ============================================================
+# ---- Hero header card ----
+st.markdown(
+    """
+    <div class="hero-card">
+      <div class="hero-pill">Multi-Agent • MedlinePlus • Memory</div>
+      <div class="hero-title">
+        <span class="hero-heart">💙</span>
+        <span>Personal Health Coach</span>
+      </div>
+      <p class="hero-desc">
+        This tool uses your multi-agent pipeline (retriever, consulting agent, personal care agent, planner)
+        to turn trusted MedlinePlus content into tailored health education. It is <b>not</b> a substitute for
+        professional medical advice. In emergencies, call 911 or your local emergency number.
+      </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 with st.sidebar:
     st.header("Patient identification")
 
@@ -274,7 +408,7 @@ if start_btn:
             "messages": [],
             "turn_count": 0,
             "last_question": "",
-            "profile_complete": True,       # so patient_intake_node just returns
+            "profile_complete": True,
             "is_returning_patient": is_returning,
             "patient_lookup_attempted": True,
         }
@@ -303,10 +437,20 @@ if step is not None and state is not None:
     if step["type"] == "final":
         st.markdown("### 🔍 Personalized health guidance")
         st.markdown(
-            f"<div class='card' style='margin-top:0.5rem;'>"
-            f"<pre style='white-space:pre-wrap;"
-            f"font-family:system-ui, -apple-system, BlinkMacSystemFont, sans-serif;'>"
-            f"{step['output']}</pre></div>",
+            f"""
+            <div class="result-card">
+              <div class="result-header">
+                <div class="result-header-left">
+                  <span>🩺 Personalized Plan</span>
+                  <span class="result-badge">Auto-generated from your multi-agent pipeline</span>
+                </div>
+                <span>MedlinePlus • Evidence-informed</span>
+              </div>
+              <div class="result-body">
+                <pre>{step['output']}</pre>
+              </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
