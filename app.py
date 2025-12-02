@@ -44,7 +44,7 @@ graph = init_backend()
 
 
 # ============================================================
-# 2) HELPERS THAT MIRROR  CONSOLE LOGIC
+# 2) HELPERS THAT MIRROR CONSOLE LOGIC
 # ============================================================
 def analyze_state(state: dict):
     """
