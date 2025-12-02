@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 
 
 # ============================================================
-# 1) BACKEND INITIALIZATION — USES YOUR DB_PATH, GLOBAL_STORE
+# 1) BACKEND INITIALIZATION — USES  DB_PATH, GLOBAL_STORE
 # ============================================================
 @st.cache_resource
 def init_backend():
@@ -44,7 +44,7 @@ graph = init_backend()
 
 
 # ============================================================
-# 2) HELPERS THAT MIRROR YOUR CONSOLE LOGIC
+# 2) HELPERS THAT MIRROR  CONSOLE LOGIC
 # ============================================================
 def analyze_state(state: dict):
     """
