@@ -321,7 +321,7 @@ st.markdown(
         <span>Personal Health Coach</span>
       </div>
       <p class="hero-desc">
-        This tool uses your multi-agent pipeline (retriever, consulting agent, personal care agent, planner)
+        This tool uses a multi-agent pipeline (retriever, consulting agent, personal care agent, planner)
         to turn trusted MedlinePlus content into tailored health education. It is <b>not</b> a substitute for
         professional medical advice. In emergencies, call 911 or your local emergency number.
       </p>

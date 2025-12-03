@@ -208,3 +208,6 @@ __marimo__/
 ".env" 
 "__pycache__/" 
 "*.pyc" 
+
+#patients database
+data/patients.db

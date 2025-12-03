@@ -17,9 +17,10 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from datetime import datetime
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
-# from langgraph.checkpoint.sqlite import SqliteSaver
 import sqlite3
 import pickle
+from langchain_core.runnables.graph import MermaidDrawMethod
+from IPython.display import Image
 
 # --------------------------------------------------------------------
 # ENV + GLOBALS
@@ -568,11 +569,11 @@ def patient_intake_node(state: PipelineState) -> PipelineState:
     return state
 
 
-def route_from_intake(state: PipelineState) -> Literal["retrieve", END]:
+def route_from_intake(state: PipelineState) -> Literal["retriever_agent", END]:
     """Route after intake based on whether profile is complete."""
     if state.get("profile_complete"):
         logging.info("✓ Profile complete, proceeding to retrieval")
-        return "retrieve"
+        return "retriever_agent"  # ✅ Changed from "retrieve"
     else:
         logging.error("✗ Profile incomplete, ending workflow")
         return END
@@ -761,12 +762,11 @@ def planner_summary_node(state: PipelineState) -> PipelineState:
     return state
 
 
-def route_from_consult(state: PipelineState) -> Literal["followup", "care"]:
+def route_from_consult(state: PipelineState) -> Literal["followup", "personal_care_agent"]:
     if state.get("needs_more"):
         return "followup"
     else:
-        return "care"
-
+        return "personal_care_agent"
 
 # ----------------- Build the graph -----------------
 def build_planner_graph():
@@ -774,10 +774,10 @@ def build_planner_graph():
     workflow = StateGraph(PipelineState)
     
     workflow.add_node("patient_intake", patient_intake_node)
-    workflow.add_node("retrieve", retriever_agent)
-    workflow.add_node("consult", consulting_agent)
+    workflow.add_node("retriever_agent", retriever_agent)
+    workflow.add_node("consulting_agent", consulting_agent)
     workflow.add_node("followup", followup_node)
-    workflow.add_node("care", personal_care_agent)
+    workflow.add_node("personal_care_agent", personal_care_agent)
     workflow.add_node("planner_summary", planner_summary_node)
 
     workflow.set_entry_point("patient_intake")
@@ -787,24 +787,24 @@ def build_planner_graph():
         "patient_intake",
         route_from_intake,
         {
-            "retrieve": "retrieve",
+            "retriever_agent": "retriever_agent",
             END: END
         }
     )
     
-    workflow.add_edge("retrieve", "consult")
+    workflow.add_edge("retriever_agent", "consulting_agent")
 
     workflow.add_conditional_edges(
-        "consult",
+        "consulting_agent",
         route_from_consult,
         {
             "followup": "followup",
-            "care": "care",
+            "personal_care_agent": "personal_care_agent",
         }
     )
 
     workflow.add_edge("followup", END)
-    workflow.add_edge("care", "planner_summary")
+    workflow.add_edge("personal_care_agent", "planner_summary")
     workflow.add_edge("planner_summary", END)
 
     checkpointer = InMemorySaver()
@@ -874,6 +874,14 @@ class PlannerAgent:
 
         return {"type": "final", "output": "[No further questions or output.]"}
 
+def save_graph():
+    # Save graph image
+    graph = planner_graph.get_graph()
+    png_bytes = graph.draw_mermaid_png(draw_method=MermaidDrawMethod.API)
+
+    with open("langgraph_diagram.png", "wb") as f:
+        f.write(png_bytes)
+        
 
 if __name__ == "__main__":
     print("\n" + "="*70)
@@ -895,10 +903,14 @@ if __name__ == "__main__":
         GLOBAL_STORE = InMemoryStore()
         print("✓ New memory store initialized\n")
 
+    #Load embedding model globally
+    load_embedding_model()
+    print(f"✓ Embedding model loaded for semantic search\n")
+
     # Build graph
     planner_graph = build_planner_graph()
-    planner = PlannerAgent(planner_graph)
 
+    planner = PlannerAgent(planner_graph)
     # Ask for patient ID first
     print("="*70)
     print("PATIENT IDENTIFICATION")

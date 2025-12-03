@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 import json
 from langchain.agents import create_agent
-from . consulting_agent_with_memory import PatientProfile
+from .consulting_agent_with_memory_upd import PatientProfile
 from langchain.agents.middleware import wrap_tool_call
 from langgraph.prebuilt import ToolNode
 from langchain_ollama import ChatOllama
@@ -56,7 +56,7 @@ class RetrievedList(BaseModel):
 llm_model = ChatOllama(
     base_url="http://10.230.100.240:17020/",
     model="gpt-oss:20b",
-    temperature=0.3
+    temperature=0.1
 )
 
 # Neo4j Query class
@@ -187,7 +187,7 @@ def query_medical_knowledge_graph(symptoms_dict: str) -> list[dict]:
     """
     
     query = f"""
-    Find all medical conditions (MeshDescriptor nodes) that are associated with the symptoms and related context given in this dictionary: {symptoms_dict}
+    Find the most relevant medical conditions (MeshDescriptor nodes) that are associated with the symptoms and related context given in this dictionary: {symptoms_dict}
     
     For each condition found, provide:
     - Condition name
@@ -196,7 +196,7 @@ def query_medical_knowledge_graph(symptoms_dict: str) -> list[dict]:
     - Available health topics or resources
     - Any summary or description information
     
-    Match symptoms flexibly using partial text matching.
+    Match symptoms flexibly using partial text matching, return maximum of 10 conditions.
     Return result as list of dictionaries
     """
     
@@ -277,8 +277,9 @@ WORKFLOW:
 
 3. Use the query_medical_knowledge_graph tool to retrieve relevant medical information based on current symptoms.
 
-4. Generate comprehensive recommendations considering:
-   - Current symptoms and retrieved medical knowledge
+4. Generate comprehensive recommendations using ONLY:
+   - Current symptoms 
+   - Retrieved knowledge graph results
    - Past medical history and recommendations (if available)
    - Patient demographics (age, sex, etc.)
    - Medical reference materials provided
@@ -296,6 +297,23 @@ WORKFLOW:
 6. AFTER providing recommendations, use the save_patient_history tool to store:
    - Updated patient profile
    - New recommendation with date, conditions, symptoms, and advice
+   
+ USE THIS FORMAT:
+save_patient_history(
+    patient_profile={
+        "id": "<patient_id>",
+        "name": "<patient_name>",
+        "sex": "<patient_sex>",
+        "age": <patient_age_as_number>,
+        "symptoms": [list of symptom dicts]
+    },
+    recommendation={
+        "date": "YYYY-MM-DD",
+        "possible_conditions": ["condition1", "condition2"],
+        "recommendations": "Your recommendations as a single string",
+        "symptoms_at_time": ["symptom1", "symptom2"]
+    }
+)
 
 IMPORTANT RULES:
 - Use information from the knowledge graph and provided medical references
@@ -311,11 +329,75 @@ MEMORY USAGE:
 - Use history to provide continuity of care
 """
 
+
+
 # Global store reference - will be set by create_personal_care_agent
 _global_store = None
 _global_user_id = None
 
 #MEMORY TOOLS
+# @tool
+# def save_patient_history(
+#     patient_profile: dict,
+#     recommendation: dict
+# ) -> str:
+#     """
+#     Save or update patient history with new recommendation.
+    
+#     Args:
+#         patient_profile: Current patient profile dictionary
+#         recommendation: New recommendation to add (dict with date, conditions, recommendations, symptoms)
+    
+#     Returns:
+#         Success message
+#     """
+#     try:
+#         store = _global_store
+#         user_id = _global_user_id or patient_profile.get("id", "unknown")
+        
+#         if not store:
+#             return "Error: Memory store not available"
+        
+#         namespace = ("PatientDetails",)
+        
+#         # Try to get existing history
+#         existing = store.get(namespace, user_id)
+        
+#         if existing and existing.value:
+#             try:
+#                 history = PatientHistory.model_validate(existing.value)
+#             except Exception as e:
+#                 print(f"Error loading existing history: {e}, creating new")
+#                 history = PatientHistory(profile=PatientProfile(**patient_profile))
+#         else:
+#             history = PatientHistory(profile=PatientProfile(**patient_profile))
+        
+#         # Update profile with latest information
+#         history.profile = PatientProfile(**patient_profile)
+        
+#         # **FIX: Convert list to string if needed**
+#         recommendation_copy = recommendation.copy()
+#         if "recommendations" in recommendation_copy and isinstance(recommendation_copy["recommendations"], list):
+#             # Join list items with newlines or bullet points
+#             recommendation_copy["recommendations"] = "\n".join(recommendation_copy["recommendations"])
+        
+#         # Add new recommendation
+#         new_recommendation = PatientRecommendation(**recommendation_copy)
+#         history.recommendations.append(new_recommendation)
+#         history.last_updated = datetime.now().isoformat()
+        
+#         # Save to store
+#         store.put(namespace, user_id, history.model_dump())
+
+#         print(f"✓ Saved patient history for {user_id}. Total consultations: {len(history.recommendations)}")
+#         return f"Successfully saved patient history. Total consultations: {len(history.recommendations)}"
+    
+#     except Exception as e:
+#         print(f"Error saving patient history: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         return f"Error saving patient history: {str(e)}"
+
 @tool
 def save_patient_history(
     patient_profile: dict,
@@ -340,31 +422,91 @@ def save_patient_history(
         
         namespace = ("PatientDetails",)
         
-        # Try to get existing history
+        # Get existing history first to preserve complete profile
         existing = store.get(namespace, user_id)
         
         if existing and existing.value:
             try:
                 history = PatientHistory.model_validate(existing.value)
+                print(f"✓ Loaded existing history for {user_id}")
             except Exception as e:
                 print(f"Error loading existing history: {e}, creating new")
-                history = PatientHistory(profile=PatientProfile(**patient_profile))
+                history = None
         else:
-            history = PatientHistory(profile=PatientProfile(**patient_profile))
+            history = None
         
-        # Update profile with latest information
-        history.profile = PatientProfile(**patient_profile)
+        # If no existing history, create new profile with all required fields
+        if history is None:
+            # Ensure all required fields are present
+            profile_data = {
+                "id": patient_profile.get("id", user_id),
+                "name": patient_profile.get("name", "Unknown"),
+                "sex": patient_profile.get("sex", "Unknown"),
+                "age": patient_profile.get("age", 0),
+                "symptoms": patient_profile.get("symptoms", [])
+            }
+            
+            try:
+                history = PatientHistory(profile=PatientProfile(**profile_data))
+            except Exception as e:
+                print(f"Error creating new history: {e}")
+                print(f"Profile data: {profile_data}")
+                return f"Error: Could not create patient profile - {str(e)}"
+        else:
+            # Update existing profile, preserving all required fields
+            try:
+                updated_profile_data = {
+                    "id": patient_profile.get("id", history.profile.id),
+                    "name": patient_profile.get("name", history.profile.name),
+                    "sex": patient_profile.get("sex", history.profile.sex),
+                    "age": patient_profile.get("age", history.profile.age),
+                    "symptoms": patient_profile.get("symptoms", history.profile.symptoms)
+                }
+                history.profile = PatientProfile(**updated_profile_data)
+            except Exception as e:
+                print(f"Error updating profile: {e}")
+                print(f"Keeping original profile")
+                # Keep the existing profile if update fails
         
-        # **FIX: Convert list to string if needed**
+        # Process recommendation
         recommendation_copy = recommendation.copy()
-        if "recommendations" in recommendation_copy and isinstance(recommendation_copy["recommendations"], list):
-            # Join list items with newlines or bullet points
-            recommendation_copy["recommendations"] = "\n".join(recommendation_copy["recommendations"])
         
-        # Add new recommendation
-        new_recommendation = PatientRecommendation(**recommendation_copy)
-        history.recommendations.append(new_recommendation)
-        history.last_updated = datetime.now().isoformat()
+        # Ensure required fields in recommendation
+        if "date" not in recommendation_copy:
+            recommendation_copy["date"] = datetime.now().strftime("%Y-%m-%d")
+        
+        if "possible_conditions" not in recommendation_copy:
+            recommendation_copy["possible_conditions"] = []
+        elif isinstance(recommendation_copy["possible_conditions"], str):
+            recommendation_copy["possible_conditions"] = [recommendation_copy["possible_conditions"]]
+        
+        if "symptoms_at_time" not in recommendation_copy:
+            # Extract from patient profile
+            symptoms = patient_profile.get("symptoms", [])
+            recommendation_copy["symptoms_at_time"] = [
+                s.get("description", "") for s in symptoms if s.get("description")
+            ]
+        elif isinstance(recommendation_copy["symptoms_at_time"], str):
+            recommendation_copy["symptoms_at_time"] = [recommendation_copy["symptoms_at_time"]]
+        
+        # Convert list to string if needed for recommendations field
+        if "recommendations" in recommendation_copy:
+            if isinstance(recommendation_copy["recommendations"], list):
+                recommendation_copy["recommendations"] = "\n".join(
+                    str(r) for r in recommendation_copy["recommendations"]
+                )
+        else:
+            recommendation_copy["recommendations"] = "No specific recommendations recorded"
+        
+        # Create and add new recommendation
+        try:
+            new_recommendation = PatientRecommendation(**recommendation_copy)
+            history.recommendations.append(new_recommendation)
+            history.last_updated = datetime.now().isoformat()
+        except Exception as e:
+            print(f"Error creating recommendation: {e}")
+            print(f"Recommendation data: {recommendation_copy}")
+            return f"Error: Could not save recommendation - {str(e)}"
         
         # Save to store
         store.put(namespace, user_id, history.model_dump())

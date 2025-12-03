@@ -104,7 +104,7 @@ def process_data():
     return corpus
 
 def embed_upsert_qdrant(corpus):
-    
+    global _emb_model
     # ================================================================
     # 3) EMBEDDINGS (loaded once when the module imports)
     # ================================================================
@@ -176,6 +176,7 @@ def embed_upsert_qdrant(corpus):
     print(f"✅ Upserted {len(points)} vectors into Qdrant collection '{COLLECTION_NAME}'")
 
 def semantic_search(query, top_k=6):
+    global _emb_model
     hits = client.query_points(
     collection_name=COLLECTION_NAME,
     query=_emb_model.encode(query).tolist(),

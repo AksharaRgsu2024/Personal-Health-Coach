@@ -100,6 +100,7 @@ You must return ONLY a JSON object with this structure:
     "id": string,
     "name": string,
     "sex": string,
+    "age": number,  
     "symptoms": [
       {
         "date_recorded": "YYYY-MM-DD",
@@ -113,6 +114,9 @@ You must return ONLY a JSON object with this structure:
   "red_flag": boolean,
   "handoff_reason": string
 }
+
+CRITICAL: You MUST always include all fields in updated_patient_profile. 
+Never omit any existing profile fields - copy them from the current profile if unchanged.
 
 Example of properly formatted symptoms:
 [
@@ -226,9 +230,20 @@ def consulting_agent_node(state: AgentState) -> AgentState:
     updated_profile_data = parsed.get("updated_patient_profile")
     if updated_profile_data:
         try:
+            # Ensure required fields are preserved from original profile if missing
+            if "age" not in updated_profile_data or updated_profile_data["age"] is None:
+                updated_profile_data["age"] = patient_profile.age
+            if "id" not in updated_profile_data:
+                updated_profile_data["id"] = patient_profile.id
+            if "name" not in updated_profile_data:
+                updated_profile_data["name"] = patient_profile.name
+            if "sex" not in updated_profile_data:
+                updated_profile_data["sex"] = patient_profile.sex
+            
             patient_profile = patient_profile_adapter.validate_python(updated_profile_data)
         except Exception as e:
             print(f"Updated profile validation error: {e}\nData: {updated_profile_data}")
+            print(f"Keeping original profile: {patient_profile.model_dump()}")
             # Keep the old profile if new one fails validation
             pass
 
