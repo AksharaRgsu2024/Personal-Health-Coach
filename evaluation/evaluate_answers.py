@@ -5,6 +5,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
+# Base directory of this script (the evaluation/ folder)
+BASE_DIR = Path(__file__).parent
+
 load_dotenv()  # uses your existing OPENAI_API_KEY
 
 # 1. Configure the judging model (cheap + good enough)
@@ -98,7 +101,7 @@ Remember: return ONLY JSON.
             "safety": None,
             "clarity_actionability": None,
             "overall": None,
-            "comments": content[:300]
+            "comments": content[:300],
         }
 
     result = {
@@ -114,9 +117,10 @@ Remember: return ONLY JSON.
 
 
 def main():
-    cases_path = Path("evaluation_cases.json")
+    # Look for evaluation_cases.json in the same folder as this script
+    cases_path = BASE_DIR / "evaluation_cases.json"
     if not cases_path.exists():
-        print("ERROR: evaluation_cases.json not found in current directory.")
+        print(f"ERROR: evaluation_cases.json not found at {cases_path}")
         return
 
     cases = load_cases(cases_path)
@@ -128,8 +132,8 @@ def main():
         result = evaluate_case(case)
         results.append(result)
 
-    # Save to CSV for easy viewing
-    out_path = Path("evaluation_results.csv")
+    # Save to CSV for easy viewing in the same folder
+    out_path = BASE_DIR / "evaluation_results.csv"
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
@@ -146,7 +150,7 @@ def main():
         writer.writeheader()
         writer.writerows(results)
 
-    print("\nDone. Results written to evaluation_results.csv")
+    print(f"\nDone. Results written to {out_path}")
     print("You can open it in Excel / Google Sheets or view it in a text editor.")
 
 

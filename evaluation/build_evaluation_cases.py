@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-BASE = Path("C:/Users/user/Documents/Saud's Backup/GSU Courses/Fall 2025/Text Analytics/Personal-Health-Coach/evaluation_cases") 
+# Automatically points to the folder where this script is located
+BASE = Path(__file__).parent
 
 def load_text(name: str) -> str:
     return (BASE / name).read_text(encoding="utf-8")
@@ -33,7 +34,10 @@ cases = [
     },
 ]
 
-with open("evaluation_cases.json", "w", encoding="utf-8") as f:
+# Write JSON inside the same evaluation/ folder
+output_json = BASE / "evaluation_cases.json"
+
+with open(output_json, "w", encoding="utf-8") as f:
     json.dump(cases, f, ensure_ascii=False, indent=2)
 
-print("✓ Wrote evaluation_cases.json")
+print(f"✓ Wrote {output_json}")
