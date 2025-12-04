@@ -30,22 +30,7 @@ def init_backend():
     Init SQLite DB, memory store, and compiled graph ONCE,
     using a thread-safe SQLite connection for Streamlit.
     """
-    db_path = Path(hc.DB_PATH)
-
-    # 1) Let backend ensure DB file + tables exist
-    tmp_conn = hc.init_db(db_path)
-    tmp_conn.close()
-
-    # 2) Re-open DB with check_same_thread=False for Streamlit threads
-    if hc.GLOBAL_DB is None:
-        hc.GLOBAL_DB = sqlite3.connect(db_path, check_same_thread=False)
-
-    # 3) Load memory store using this connection
-    if hc.GLOBAL_STORE is None:
-        hc.GLOBAL_STORE = hc.load_memory_store_from_db(hc.GLOBAL_DB)
-
-    #4) Load embedding model for semantic search
-    hc.load_embedding_model()
+    hc.init_memory_backend()
     # 4) LangGraph workflow
     graph = hc.build_planner_graph()
     return graph
@@ -513,5 +498,4 @@ with tab2:
         )
 
         # Save memory store to your DB (same as console main)
-        if hc.GLOBAL_STORE is not None and hc.GLOBAL_DB is not None:
-            hc.save_memory_store_to_db(hc.GLOBAL_STORE, hc.GLOBAL_DB)
+        hc.final_memory_save()

@@ -17,18 +17,31 @@ from langgraph.store.memory import InMemoryStore
 from langchain_ollama import OllamaEmbeddings
 from dataclasses import dataclass
 from datetime import datetime
-# Demo database credentials
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from dotenv import load_dotenv
 import os
+
 load_dotenv()
 URI = os.getenv("NEO4J_URI")
 USER = os.getenv("NEO4J_USERNAME")
 PASSWORD = os.getenv("NEO4J_PASSWORD")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Global store reference - will be set by create_personal_care_agent
+# Global store reference
 _global_store = None
 _global_user_id = None
+
+
+_neo4j_schema_cache = None
+_neo4j_driver_instance = None
+
+def get_cached_neo4j_driver():
+    """Reuse Neo4j driver connection"""
+    global _neo4j_driver_instance
+    if _neo4j_driver_instance is None:
+        _neo4j_driver_instance = GraphDatabase.driver(URI, auth=(USER, PASSWORD))
+    return _neo4j_driver_instance
 
 def schema_text(node_props, rel_props, rels):
     return f"""
@@ -41,7 +54,6 @@ def schema_text(node_props, rel_props, rels):
   {rels}
   Make sure to respect relationship types and directions
   """
-
 
 class RetrievedTopic(BaseModel):
     condition: str
@@ -56,10 +68,10 @@ class RetrievedList(BaseModel):
 llm_model = ChatOllama(
     base_url="http://10.230.100.240:17020/",
     model="gpt-oss:20b",
-    temperature=0.1
+    temperature=0.3,  # Slightly higher for faster sampling
+    num_predict=2000,  # Limit output tokens
 )
 
-# Neo4j Query class
 class Neo4jGPTQuery:
     node_properties_query = """
     CALL apoc.meta.data()
@@ -85,26 +97,26 @@ class Neo4jGPTQuery:
     """
 
     def __init__(self, url, user, password, openai_api_key):
-        self.driver = GraphDatabase.driver(url, auth=(user, password))
+        global _neo4j_schema_cache
+        
+        self.driver = get_cached_neo4j_driver()
         self.openai_client = OpenAI(api_key=openai_api_key)
-        self.schema = self.generate_schema()
-        self.check_connection()
-
-    def check_connection(self):
-        try:
-            self.driver.verify_connectivity()
-            print("✓ Neo4j connection successful!")
-        except Exception as e:
-            print(f"✗ Failed to connect to Neo4j: {e}")
+        
+        # Use cached schema if available
+        if _neo4j_schema_cache is None:
+            print("⏱️  Generating Neo4j schema (first time only)...")
+            _neo4j_schema_cache = self.generate_schema()
+            print("✓ Schema cached for future use")
+        
+        self.schema = _neo4j_schema_cache
+        # Skip connection check to save time
+        # self.check_connection()
 
     def generate_schema(self):
         node_props = self.query_database(self.node_properties_query)
         rel_props = self.query_database(self.rel_properties_query)
         rels = self.query_database(self.rel_query)
         return schema_text(node_props, rel_props, rels)
-
-    def refresh_schema(self):
-        self.schema = self.generate_schema()
 
     def get_system_message(self):
         return f"""
@@ -133,11 +145,12 @@ class Neo4jGPTQuery:
         if history:
             messages.extend(history)
 
+        # Use faster model for cypher generation
         completion = self.openai_client.chat.completions.create(
             model="gpt-4.1-nano",
             messages=messages,
             temperature=0.0,
-            max_tokens=1000,
+            max_tokens=500,  # Reduced from 1000
         )
         return completion.choices[0].message.content
 
@@ -152,8 +165,7 @@ class Neo4jGPTQuery:
                 query_result['result'] = []
                 query_result['error'] = f"Invalid Cypher syntax: {str(e)}"
                 return query_result
-            print("Retrying Cypher query...")
-            # Recursively retry
+            print("⚠️  Retrying Cypher query...")
             retry_result = self.run(
                 question,
                 [
@@ -166,7 +178,6 @@ class Neo4jGPTQuery:
                 ],
                 retry=False
             )
-            # Return the retry result (which is already a dict)
             return retry_result
         except Exception as e:
             query_result['result'] = []
@@ -186,27 +197,22 @@ def query_medical_knowledge_graph(symptoms_dict: str) -> list[dict]:
         List of dictionaries containing conditions and related medical information
     """
     
+    # Simplified, more direct query
     query = f"""
-    Find the most relevant medical conditions (MeshDescriptor nodes) that are associated with the symptoms and related context given in this dictionary: {symptoms_dict}
+    Find up to 5 most relevant medical conditions for symptoms: {symptoms_dict}
     
-    For each condition found, provide:
-    - Condition name
-    - Associated symptoms
-    - Recommended diagnostic tests
-    - Available health topics or resources
-    - Any summary or description information
-    
-    Match symptoms flexibly using partial text matching, return maximum of 10 conditions.
-    Return result as list of dictionaries
+    Return as list of dictionaries with: condition name, associated symptoms, recommended tests, resources, description.
+    Use partial text matching. Be concise.
     """
     
     try:
+        start_time = time.time()
         neo4j_gpt = Neo4jGPTQuery(URI, USER, PASSWORD, OPENAI_API_KEY)
         result = neo4j_gpt.run(query)
+        elapsed = time.time() - start_time
         
-        # Check if result is a dict (should be)
         if not isinstance(result, dict):
-            print(f"Unexpected result type: {type(result)}")
+            print(f"⚠️  Unexpected result type: {type(result)}")
             return []
         
         retrieved_nodes = result.get('result', [])
@@ -214,7 +220,7 @@ def query_medical_knowledge_graph(symptoms_dict: str) -> list[dict]:
         error = result.get('error', None)
         
         if error:
-            print(f"Neo4j query error: {error}")
+            print(f"❌ Neo4j query error: {error}")
             return []
         
         print(f"\n{'='*60}")
@@ -224,17 +230,14 @@ def query_medical_knowledge_graph(symptoms_dict: str) -> list[dict]:
         print(f"{'='*60}\n")
         print(f"Retrieved {len(retrieved_nodes)} nodes from knowledge graph")
         
-        # Ensure we return a list
         if isinstance(retrieved_nodes, list):
             return retrieved_nodes
         else:
-            print(f"Warning: retrieved_nodes is not a list: {type(retrieved_nodes)}")
+            print(f"⚠️  retrieved_nodes is not a list: {type(retrieved_nodes)}")
             return []
     
     except Exception as e:
-        print(f"Error querying Neo4j: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error querying Neo4j: {str(e)}")
         return []
 
 
@@ -264,10 +267,12 @@ def initialize_memory():
     in_memory_store = InMemoryStore()
     return in_memory_store
 
+
+# 
 medical_agent_system_prompt = """
 You are a Personal Healthcare Coach with access to long-term patient memory.
 
-WORKFLOW:
+STRICTLY FOLLOW THIS WORKFLOW:
 1. ALWAYS start by using the get_patient_history tool to check if this patient has visited before.
    - Review past symptoms, conditions, and recommendations
    - Consider how current symptoms relate to past issues
@@ -294,7 +299,7 @@ WORKFLOW:
    - NEXT STEPS: When to seek medical care
    - REFERENCES: URL links from knowledge graph only
 
-6. AFTER providing recommendations, use the save_patient_history tool to store:
+6. AFTER providing recommendations, always use the save_patient_history tool to store:
    - Updated patient profile
    - New recommendation with date, conditions, symptoms, and advice
 
@@ -336,68 +341,6 @@ _global_store = None
 _global_user_id = None
 
 #MEMORY TOOLS
-# @tool
-# def save_patient_history(
-#     patient_profile: dict,
-#     recommendation: dict
-# ) -> str:
-#     """
-#     Save or update patient history with new recommendation.
-    
-#     Args:
-#         patient_profile: Current patient profile dictionary
-#         recommendation: New recommendation to add (dict with date, conditions, recommendations, symptoms)
-    
-#     Returns:
-#         Success message
-#     """
-#     try:
-#         store = _global_store
-#         user_id = _global_user_id or patient_profile.get("id", "unknown")
-        
-#         if not store:
-#             return "Error: Memory store not available"
-        
-#         namespace = ("PatientDetails",)
-        
-#         # Try to get existing history
-#         existing = store.get(namespace, user_id)
-        
-#         if existing and existing.value:
-#             try:
-#                 history = PatientHistory.model_validate(existing.value)
-#             except Exception as e:
-#                 print(f"Error loading existing history: {e}, creating new")
-#                 history = PatientHistory(profile=PatientProfile(**patient_profile))
-#         else:
-#             history = PatientHistory(profile=PatientProfile(**patient_profile))
-        
-#         # Update profile with latest information
-#         history.profile = PatientProfile(**patient_profile)
-        
-#         # **FIX: Convert list to string if needed**
-#         recommendation_copy = recommendation.copy()
-#         if "recommendations" in recommendation_copy and isinstance(recommendation_copy["recommendations"], list):
-#             # Join list items with newlines or bullet points
-#             recommendation_copy["recommendations"] = "\n".join(recommendation_copy["recommendations"])
-        
-#         # Add new recommendation
-#         new_recommendation = PatientRecommendation(**recommendation_copy)
-#         history.recommendations.append(new_recommendation)
-#         history.last_updated = datetime.now().isoformat()
-        
-#         # Save to store
-#         store.put(namespace, user_id, history.model_dump())
-
-#         print(f"✓ Saved patient history for {user_id}. Total consultations: {len(history.recommendations)}")
-#         return f"Successfully saved patient history. Total consultations: {len(history.recommendations)}"
-    
-#     except Exception as e:
-#         print(f"Error saving patient history: {str(e)}")
-#         import traceback
-#         traceback.print_exc()
-#         return f"Error saving patient history: {str(e)}"
-
 @tool
 def save_patient_history(
     patient_profile: dict,
@@ -408,7 +351,7 @@ def save_patient_history(
     
     Args:
         patient_profile: Current patient profile dictionary
-        recommendation: New recommendation to add (dict with date, conditions, recommendations, symptoms)
+        recommendation: New recommendation to add
     
     Returns:
         Success message
@@ -422,108 +365,46 @@ def save_patient_history(
         
         namespace = ("PatientDetails",)
         
-        # Get existing history first to preserve complete profile
+        # Try to get existing history
         existing = store.get(namespace, user_id)
         
         if existing and existing.value:
             try:
                 history = PatientHistory.model_validate(existing.value)
-                print(f"✓ Loaded existing history for {user_id}")
             except Exception as e:
-                print(f"Error loading existing history: {e}, creating new")
-                history = None
+                print(f"⚠️  Error loading existing history: {e}, creating new")
+                history = PatientHistory(profile=PatientProfile(**patient_profile))
         else:
-            history = None
+            history = PatientHistory(profile=PatientProfile(**patient_profile))
         
-        # If no existing history, create new profile with all required fields
-        if history is None:
-            # Ensure all required fields are present
-            profile_data = {
-                "id": patient_profile.get("id", user_id),
-                "name": patient_profile.get("name", "Unknown"),
-                "sex": patient_profile.get("sex", "Unknown"),
-                "age": patient_profile.get("age", 0),
-                "symptoms": patient_profile.get("symptoms", [])
-            }
-            
-            try:
-                history = PatientHistory(profile=PatientProfile(**profile_data))
-            except Exception as e:
-                print(f"Error creating new history: {e}")
-                print(f"Profile data: {profile_data}")
-                return f"Error: Could not create patient profile - {str(e)}"
-        else:
-            # Update existing profile, preserving all required fields
-            try:
-                updated_profile_data = {
-                    "id": patient_profile.get("id", history.profile.id),
-                    "name": patient_profile.get("name", history.profile.name),
-                    "sex": patient_profile.get("sex", history.profile.sex),
-                    "age": patient_profile.get("age", history.profile.age),
-                    "symptoms": patient_profile.get("symptoms", history.profile.symptoms)
-                }
-                history.profile = PatientProfile(**updated_profile_data)
-            except Exception as e:
-                print(f"Error updating profile: {e}")
-                print(f"Keeping original profile")
-                # Keep the existing profile if update fails
+        # Update profile
+        history.profile = PatientProfile(**patient_profile)
         
-        # Process recommendation
+        # Convert list to string if needed
         recommendation_copy = recommendation.copy()
+        if "recommendations" in recommendation_copy and isinstance(recommendation_copy["recommendations"], list):
+            recommendation_copy["recommendations"] = "\n".join(recommendation_copy["recommendations"])
         
-        # Ensure required fields in recommendation
-        if "date" not in recommendation_copy:
-            recommendation_copy["date"] = datetime.now().strftime("%Y-%m-%d")
-        
-        if "possible_conditions" not in recommendation_copy:
-            recommendation_copy["possible_conditions"] = []
-        elif isinstance(recommendation_copy["possible_conditions"], str):
-            recommendation_copy["possible_conditions"] = [recommendation_copy["possible_conditions"]]
-        
-        if "symptoms_at_time" not in recommendation_copy:
-            # Extract from patient profile
-            symptoms = patient_profile.get("symptoms", [])
-            recommendation_copy["symptoms_at_time"] = [
-                s.get("description", "") for s in symptoms if s.get("description")
-            ]
-        elif isinstance(recommendation_copy["symptoms_at_time"], str):
-            recommendation_copy["symptoms_at_time"] = [recommendation_copy["symptoms_at_time"]]
-        
-        # Convert list to string if needed for recommendations field
-        if "recommendations" in recommendation_copy:
-            if isinstance(recommendation_copy["recommendations"], list):
-                recommendation_copy["recommendations"] = "\n".join(
-                    str(r) for r in recommendation_copy["recommendations"]
-                )
-        else:
-            recommendation_copy["recommendations"] = "No specific recommendations recorded"
-        
-        # Create and add new recommendation
-        try:
-            new_recommendation = PatientRecommendation(**recommendation_copy)
-            history.recommendations.append(new_recommendation)
-            history.last_updated = datetime.now().isoformat()
-        except Exception as e:
-            print(f"Error creating recommendation: {e}")
-            print(f"Recommendation data: {recommendation_copy}")
-            return f"Error: Could not save recommendation - {str(e)}"
+        # Add new recommendation
+        new_recommendation = PatientRecommendation(**recommendation_copy)
+        history.recommendations.append(new_recommendation)
+        history.last_updated = datetime.now().isoformat()
         
         # Save to store
         store.put(namespace, user_id, history.model_dump())
 
-        print(f"✓ Saved patient history for {user_id}. Total consultations: {len(history.recommendations)}")
-        return f"Successfully saved patient history. Total consultations: {len(history.recommendations)}"
+        print(f"✓ Saved patient history for {user_id}. Total: {len(history.recommendations)}")
+        return f"Successfully saved. Total consultations: {len(history.recommendations)}"
     
     except Exception as e:
-        print(f"Error saving patient history: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return f"Error saving patient history: {str(e)}"
+        print(f"❌ Error saving patient history: {str(e)}")
+        return f"Error saving: {str(e)}"
+
 
 @tool
 def get_patient_history() -> str:
     """
-    Retrieve complete patient history including past symptoms and recommendations.
+    Retrieve patient history including past symptoms and recommendations.
     
     Returns:
         Formatted patient history or message if not found
@@ -532,70 +413,51 @@ def get_patient_history() -> str:
         store = _global_store
         user_id = _global_user_id
         
-        if not store:
-            return "Error: Memory store not available"
-        
-        if not user_id:
-            return "Error: User ID not provided in context"
+        if not store or not user_id:
+            return "No previous history available."
         
         namespace = ("PatientDetails",)
-        
-        # Retrieve data from store
         patient_data = store.get(namespace, user_id)
         
         if not patient_data or not patient_data.value:
-            return "No previous patient history found. This appears to be a new patient."
+            return "New patient - no previous history."
         
         history = PatientHistory.model_validate(patient_data.value)
         
-        # Format the history nicely
-        formatted = f"""
-PATIENT HISTORY SUMMARY
-========================
-Patient ID: {history.profile.id}
-Name: {history.profile.name}
-Sex: {history.profile.sex}
-Age: {history.profile.age}
-Last Updated: {history.last_updated}
-
-CURRENT SYMPTOMS:
-{json.dumps([s for s in history.profile.symptoms], indent=2)}
-
-PAST CONSULTATIONS ({len(history.recommendations)}):
+        # Compact format for faster processing
+        formatted = f"""PATIENT: {history.profile.name} | ID: {history.profile.id} | Age: {history.profile.age} | Sex: {history.profile.sex}
+CURRENT SYMPTOMS: {json.dumps([s for s in history.profile.symptoms])}
+PAST VISITS: {len(history.recommendations)}
 """
-        for i, rec in enumerate(history.recommendations, 1):
+        
+        # Include only last 2 visits for speed
+        for i, rec in enumerate(list(history.recommendations)[-2:], 1):
             formatted += f"""
---- Consultation {i} ({rec.date}) ---
-Symptoms at time: {', '.join(rec.symptoms_at_time)}
-Possible conditions: {', '.join(rec.possible_conditions)}
-Recommendations: {rec.recommendations[:200]}...
+Visit {i} ({rec.date}): {', '.join(rec.symptoms_at_time[:3])}
+Conditions: {', '.join(rec.possible_conditions[:3])}
 """
         
         return formatted
     
     except Exception as e:
-        print(f"Error retrieving patient history: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return f"Error retrieving patient history: {str(e)}"
+        print(f"❌ Error retrieving history: {str(e)}")
+        return "Error retrieving history."
 
 
 def create_personal_care_agent(store: InMemoryStore, context_schema=Context):
     """
-    Create the personal care agent with memory capabilities using create_agent.
+    Create the personal care agent with memory capabilities.
     
     Args:
-        store: InMemoryStore instance for patient data persistence
-        context_schema: Schema for context (includes user_id)
+        store: InMemoryStore instance
+        context_schema: Schema for context
     
     Returns:
-        Compiled agent graph with store
+        Compiled agent graph
     """
-    # Set global store reference so tools can access it
     global _global_store
     _global_store = store
     
-    # create_agent returns a compiled graph
     agent = create_agent(
         model=llm_model,
         tools=[query_medical_knowledge_graph, get_patient_history, save_patient_history],
@@ -713,12 +575,39 @@ Please remember this is not professional medical advice. Always consult with a h
         # Clear global state after invocation
         _global_user_id = None
 
+def generate_fallback_response(patient_profile: dict, user_query: str) -> str:
+    """Generate a basic fallback response if agent fails or times out."""
+    symptoms = patient_profile.get("symptoms", [])
+    symptom_list = ", ".join([s.get("description", "") for s in symptoms[:3]])
+    
+    return f"""
+CURRENT SYMPTOMS ANALYSIS:
+You are experiencing: {symptom_list}
+
+GENERAL RECOMMENDATIONS:
+1. Monitor your symptoms closely and track any changes
+2. Stay hydrated and get adequate rest
+3. Maintain a balanced diet and avoid triggers
+4. Keep a symptom diary to share with healthcare providers
+
+NEXT STEPS:
+- If symptoms worsen or persist beyond 3-5 days, consult a healthcare provider
+- Seek immediate medical attention if you experience:
+  • Severe pain or discomfort
+  • Difficulty breathing
+  • High fever (>103°F/39.4°C)
+  • Chest pain or pressure
+  • Confusion or altered mental state
+
+IMPORTANT: This is general information only, not professional medical advice. 
+Always consult with a qualified healthcare provider for proper diagnosis and treatment.
+"""
+
 
 if __name__ == "__main__":
     # Initialize memory store
     memory_store = initialize_memory()
     
-    # Test the agent
     print("="*80)
     print("TESTING PERSONAL CARE AGENT")
     print("="*80)
@@ -737,13 +626,17 @@ if __name__ == "__main__":
     test_query = "I have fever and cough for 3 days"
     test_passages = ["Fever is a common symptom of infection..."]
     
+    start = time.time()
     response = run_personal_care_agent(
         test_profile,
         test_query,
         test_passages,
-        memory_store
+        memory_store,
+        timeout=45  # 45 second timeout
     )
+    elapsed = time.time() - start
     
     print("\n--- Response ---")
     print(response)
     print("="*80)
+    print(f"Total execution time: {elapsed:.2f}s")
