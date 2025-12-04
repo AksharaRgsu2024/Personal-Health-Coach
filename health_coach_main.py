@@ -93,7 +93,7 @@ def track_patient_id(patient_id: str):
 
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Initialize SQLite DB with memory_store table only."""
-    conn = sqlite3.connect(db_path)
+    conn = get_connection()
     
     # Single unified memory_store table for LangGraph store persistence
     conn.execute(
@@ -120,6 +120,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.commit()
     return conn
 
+def get_connection():
+    return sqlite3.connect(DB_PATH)
 
 def save_memory_store_to_db():
     """
@@ -137,6 +139,8 @@ def save_memory_store_to_db():
         return
     
     try:
+        # conn=get_connection()
+        # cursor = conn.cursor()
         cursor = GLOBAL_DB.cursor()
         now = datetime.now().isoformat()
         namespace = ("PatientDetails",)
@@ -246,6 +250,7 @@ def save_memory_store_to_db():
                 continue
         
         # Commit changes
+        # conn.commit()
         GLOBAL_DB.commit()
         
         total = saved_count + updated_count
@@ -269,6 +274,7 @@ def save_memory_store_to_db():
         traceback.print_exc()
         try:
             GLOBAL_DB.rollback()
+            # conn.rollback()
         except:
             pass
 
@@ -396,6 +402,8 @@ def save_new_patient_to_store(patient_profile: PatientProfile, store: InMemorySt
             
             # Verify it's in the database
             cursor = GLOBAL_DB.cursor()
+            # conn=get_connection()
+            # cursor = conn.cursor()
             cursor.execute(
                 "SELECT key FROM memory_store WHERE namespace = ? AND key = ?",
                 ("/".join(namespace), patient_id)
@@ -520,6 +528,8 @@ def update_patient_history_with_plan(state: PipelineState):
         
         # Verify in database
         cursor = GLOBAL_DB.cursor()
+        # conn=get_connection()
+        # cursor = conn.cursor()
         cursor.execute(
             "SELECT value FROM memory_store WHERE namespace = ? AND key = ?",
             ("/".join(namespace), patient_id)
@@ -869,6 +879,8 @@ def consulting_agent(state: PipelineState) -> PipelineState:
     state["messages"] = updated.get("messages", [])
     state["turn_count"] = updated.get("turn_count", 1)
     state["needs_more"] = bool(updated.get("need_more_info"))
+    if (bool(followup_q)==False):
+        state["needs_more"] = False
     state["last_question"] = updated.get("last_question")
     
     logger.info(
@@ -1123,7 +1135,7 @@ if __name__ == "__main__":
     init_memory_backend()
     # Build graph
     planner_graph = build_planner_graph()
-    save_graph(planner_graph)
+    # save_graph(planner_graph)
     planner = PlannerAgent(planner_graph)
     # Ask for patient ID first
     print("="*70)
