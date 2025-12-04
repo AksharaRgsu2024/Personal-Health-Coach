@@ -66,7 +66,7 @@ class RetrievedList(BaseModel):
     items: List[RetrievedTopic]
 
 llm_model = ChatOllama(
-    base_url="http://10.230.100.240:17020/",
+    base_url=os.getenv("OLLAMA_SERVER_URL", "http://localhost:11434"),
     model="gpt-oss:20b",
     temperature=0.3,  # Slightly higher for faster sampling
     num_predict=2000,  # Limit output tokens

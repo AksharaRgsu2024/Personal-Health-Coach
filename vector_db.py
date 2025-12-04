@@ -185,7 +185,7 @@ def semantic_search(query, top_k=6):
     return hits
 
 if __name__=="__main__":
-    # corpus=process_data()
-    # embed_upsert_qdrant(corpus)
+    corpus=process_data()
+    embed_upsert_qdrant(corpus)
     results=semantic_search("Fever and sore throat")
     print(results)

@@ -44,7 +44,7 @@ class Context:
 
 # Configure LLM
 llm = ChatOllama(
-    base_url="http://10.230.100.240:17020/",
+    base_url=os.getenv("OLLAMA_SERVER_URL", "http://localhost:11434"),
     model="gpt-oss:20b",
     temperature=0.3
 )
@@ -93,7 +93,7 @@ def track_patient_id(patient_id: str):
 
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Initialize SQLite DB with memory_store table only."""
-    conn = get_connection()
+    conn = sqlite3.connect(db_path)
     
     # Single unified memory_store table for LangGraph store persistence
     conn.execute(

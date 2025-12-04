@@ -1,3 +1,4 @@
+import os
 from typing_extensions import TypedDict
 from typing import List, Dict, Any
 from datetime import date
@@ -8,7 +9,8 @@ from langchain_community.chat_models import ChatOllama
 from langgraph.graph import StateGraph
 from langgraph.checkpoint.memory import InMemorySaver
 import json
-
+from dotenv import load_dotenv
+load_dotenv()
 
 class SymptomDict(TypedDict):
     date_recorded: str  # Changed to str for easier LLM handling
@@ -144,7 +146,7 @@ def _make_llm() -> ChatOpenAI:
 
 
 llm = ChatOllama(
-    base_url="http://10.230.100.240:17020/",
+    base_url=os.getenv("OLLAMA_SERVER_URL", "http://localhost:11434"),
     model="gpt-oss:20b",
     temperature=0.3
 )
