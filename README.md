@@ -10,9 +10,9 @@ This application uses evidence-based health information from MedlinePlus, an ope
 https://medlineplus.gov/healthtopics.html
 
 ## Tech Stack
-- Agent Orchestration: LangGraph
+- Agent Orchestration: Python, LangGraph
 - Vector database and Graph RAG: Qdrant + Neo4j Knowledge Graph
-- Memory store: Sqlite3
+- Memory store for long-term patient histories: Sqlite3
 - LLM models: Ollama and OpenAI
 - Frontend: Streamlit
 
