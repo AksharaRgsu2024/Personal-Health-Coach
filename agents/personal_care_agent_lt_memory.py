@@ -67,7 +67,7 @@ class RetrievedList(BaseModel):
 
 llm_model = ChatOllama(
     base_url=os.getenv("OLLAMA_SERVER_URL", "http://localhost:11434"),
-    model="gpt-oss:20b",
+    model=os.getenv("LLM_MODEL", "gpt-oss:20b"),
     temperature=0.3,  # Slightly higher for faster sampling
     num_predict=2000,  # Limit output tokens
 )

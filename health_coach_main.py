@@ -42,12 +42,6 @@ class Context:
     user_id: str
     store: InMemoryStore
 
-# Configure LLM
-llm = ChatOllama(
-    base_url=os.getenv("OLLAMA_SERVER_URL", "http://localhost:11434"),
-    model="gpt-oss:20b",
-    temperature=0.3
-)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 

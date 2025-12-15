@@ -147,7 +147,7 @@ def _make_llm() -> ChatOpenAI:
 
 llm = ChatOllama(
     base_url=os.getenv("OLLAMA_SERVER_URL", "http://localhost:11434"),
-    model="gpt-oss:20b",
+    model=os.getenv("LLM_MODEL", "gpt-oss:20b"),
     temperature=0.3
 )
 
