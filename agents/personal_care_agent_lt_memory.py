@@ -539,6 +539,7 @@ Use the knowledge graph to find relevant medical conditions and provide evidence
             elif hasattr(msg, 'role') and msg.role == 'assistant':
                 care_text = msg.content
                 break
+        care_text = strip_save_history(care_text)
         
         if not care_text:
             care_text = """
@@ -574,6 +575,11 @@ Please remember this is not professional medical advice. Always consult with a h
     finally:
         # Clear global state after invocation
         _global_user_id = None
+
+def strip_save_history(s: str) -> str:
+    head, _, _ = s.partition("save_patient_history")
+    return head
+
 
 def generate_fallback_response(patient_profile: dict, user_query: str) -> str:
     """Generate a basic fallback response if agent fails or times out."""

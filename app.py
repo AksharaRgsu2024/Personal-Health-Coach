@@ -1,15 +1,17 @@
-# app.py — Streamlit front-end for YOUR health_coach_main.py
+# app.py — Fixed Streamlit front-end for health_coach_main.py
 
 from pathlib import Path
 import sqlite3
 
 import streamlit as st
 
-# 🔗 Import your backend module (the file you pasted)
 import health_coach_main as hc
 
 from agents.consulting_agent_with_memory import PatientProfile
 from langchain_core.messages import HumanMessage
+import html
+import markdown
+import re
 
 #Session state
 # Initialize session state variables if they don't exist
@@ -19,6 +21,8 @@ if "step" not in st.session_state:
     st.session_state["step"] = {"type": "", "output": ""}
 if "patient_message" not in st.session_state:
     st.session_state["patient_message"] = ""
+if "agent_status" not in st.session_state:
+    st.session_state["agent_status"] = []
 
 
 # ============================================================
@@ -130,6 +134,69 @@ def load_or_create_patient(
     )
 
 
+def clean_llm_output(text: str) -> str:
+    text = text.strip("\n")
+    text = "\n".join(line.lstrip() for line in text.splitlines())
+    text = re.sub(r'[\u00A0\u200B\u202F]', ' ', text)
+    # Normalize multiple spaces to single space (but preserve intentional line breaks)
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(
+        r'<strong>PATIENT CONTEXT</strong>.*?(?=\n|$)', 
+        r'<strong>PATIENT CONTEXT</strong>\n\n', 
+        text, 
+        flags=re.IGNORECASE | re.DOTALL
+    )
+    # remove stray closing divs and body/html tags
+    text = re.sub(r"</?(div|body|html)[^>]*>", "", text, flags=re.IGNORECASE)
+    return text
+
+def fix_markdown_tables(text):
+    """Fix malformed markdown tables by splitting on || and rebuilding with proper line breaks."""
+    lines = text.split('\n')
+    fixed_lines = []
+    
+    for line in lines:
+        # Check if this line contains a table (has multiple |)
+        if line.count('|') >= 2:
+            # Check if it has || which indicates concatenated rows
+            if '||' in line:
+                # Split by || to separate rows
+                parts = line.split('||')
+                for part in parts:
+                    if part.strip():
+                        # Ensure it starts and ends with |
+                        part = part.strip()
+                        if not part.startswith('|'):
+                            part = '|' + part
+                        if not part.endswith('|'):
+                            part = part + '|'
+                        fixed_lines.append(part)
+            else:
+                # Already properly formatted
+                fixed_lines.append(line)
+        else:
+            # Not a table line
+            fixed_lines.append(line)
+    
+    return '\n'.join(fixed_lines)
+
+def render_markdown_with_tables(text):
+    """Convert markdown text to HTML, handling tables properly."""
+    # Clean the text first
+    cleaned_text = clean_llm_output(text)
+    
+    # Fix table formatting issues
+    fixed_text = fix_markdown_tables(cleaned_text)
+    
+    # Convert markdown to HTML
+    html_output = markdown.markdown(
+        fixed_text,
+        extensions=['tables', 'fenced_code', 'nl2br']
+    )
+    
+    return html_output
+
 # ============================================================
 # 3) STREAMLIT PAGE LAYOUT & STYLES
 # ============================================================
@@ -139,7 +206,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---- Custom CSS: layout + colors + cards ----
+# ---- Custom CSS: layout + colors + cards + markdown styling ----
 st.markdown(
     """
     <style>
@@ -267,16 +334,119 @@ st.markdown(
         border:1px solid rgba(248,250,252,0.6);
     }
     .result-body {
-        padding:1.1rem 1.3rem 1.15rem 1.3rem;
+        padding:1.5rem 1.8rem;
         max-height: 1024px;
         overflow-y:auto;
         background: linear-gradient(to bottom right, #fff7fb, #fefce8);
     }
-    .result-body pre {
-        white-space:pre-wrap;
-        font-family:system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
-        font-size:0.9rem;
-        color:#111827;
+
+    /* Markdown content styling */
+    .result-body h1, .result-body h2, .result-body h3 {
+        color: #1f2937;
+        margin-top: 1.5rem;
+        margin-bottom: 0.75rem;
+        font-weight: 600;
+    }
+    
+    .result-body h1 { font-size: 1.5rem; }
+    .result-body h2 { font-size: 1.3rem; }
+    .result-body h3 { font-size: 1.1rem; }
+    
+    .result-body p {
+        color: #374151;
+        line-height: 1.7;
+        margin-bottom: 1rem;
+    }
+    
+    .result-body ul, .result-body ol {
+        margin-left: 1.5rem;
+        margin-bottom: 1rem;
+        color: #374151;
+    }
+    
+    .result-body li {
+        margin-bottom: 0.5rem;
+        line-height: 1.6;
+    }
+    
+    .result-body strong {
+        color: #1f2937;
+        font-weight: 600;
+    }
+    
+    .result-body code {
+        background: #f3f4f6;
+        padding: 0.2rem 0.4rem;
+        border-radius: 4px;
+        font-size: 0.9em;
+        color: #ef4444;
+    }
+    
+    /* Table styling */
+    .result-body table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1.5rem 0;
+        background: white;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .result-body table thead {
+        background: linear-gradient(135deg, #ec4899, #f472b6);
+        color: white;
+    }
+    
+    .result-body table th {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        font-weight: 600;
+        font-size: 0.9rem;
+        border-bottom: 2px solid #f9a8d4;
+    }
+    
+    .result-body table td {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #fce7f3;
+        color: #374151;
+        line-height: 1.5;
+    }
+    
+    .result-body table tbody tr:hover {
+        background: #fdf2f8;
+    }
+    
+    .result-body table tbody tr:last-child td {
+        border-bottom: none;
+    }
+    
+    /* Links */
+    .result-body a {
+        color: #ec4899;
+        text-decoration: none;
+        font-weight: 500;
+    }
+    
+    .result-body a:hover {
+        color: #db2777;
+        text-decoration: underline;
+    }
+    
+    /* Blockquotes */
+    .result-body blockquote {
+        border-left: 4px solid #ec4899;
+        padding-left: 1rem;
+        margin: 1rem 0;
+        color: #6b7280;
+        font-style: italic;
+    }
+    
+    /* Horizontal rules */
+    .result-body hr {
+        border: none;
+        border-top: 2px solid #f9a8d4;
+        margin: 2rem 0;
     }
 
     /* make Streamlit alerts softer */
@@ -340,7 +510,7 @@ with st.sidebar:
 # ============================================================
 # 5) MAIN HEALTH CONCERN INPUT
 # ============================================================
-tab1, tab2 = st.tabs(["Consulting Converstation", "Personal Care Plan"])
+tab1, tab2 = st.tabs(["Consulting Conversation", "Personal Care Plan"])
 
 with tab1:
     st.subheader("Describe your health concern")
@@ -363,55 +533,106 @@ with tab1:
         st.session_state["graph_state"] = None
         st.session_state["step"] = {"type": "", "output": ""}
         st.session_state["patient_message"] = ""
+        st.session_state["agent_status"] = []
         st.rerun()
 
 
     # ============================================================
-    # 6) FIRST TURN: RUN FULL PIPELINE (INCLUDING YOUR NODES)
+    # 6) FIRST TURN: RUN FULL PIPELINE WITH AGENT STATUS TRACKING
     # ============================================================
     if start_btn:
         if not user_query.strip():
             st.warning("Please describe your health concern first.")
         else:
-            (
-                profile_dict,
-                history_dict,
-                final_patient_id,
-                is_returning,
-                msg,
-            ) = load_or_create_patient(
-                patient_id_input,
-                name_input,
-                sex_input,
-                age_input,
-            )
+            # Create a status container
+            status_container = st.status("Processing your request...", expanded=True)
+            
+            with status_container:
+                st.write("🔍 Loading patient information...")
+                
+                (
+                    profile_dict,
+                    history_dict,
+                    final_patient_id,
+                    is_returning,
+                    msg,
+                ) = load_or_create_patient(
+                    patient_id_input,
+                    name_input,
+                    sex_input,
+                    age_input,
+                )
 
-            st.session_state["patient_message"] = msg
+                st.session_state["patient_message"] = msg
+                st.write(f"✅ {msg}")
 
-            # We simulate that patient_intake_node has already finished,
-            # by giving profile + setting profile_complete=True.
-            initial_state = {
-                "user_query": user_query.strip(),
-                "history": [],
-                "final_output": "",
-                "patient_profile": profile_dict,
-                "patient_history": history_dict,
-                "patient_id": final_patient_id,
-                "messages": [],
-                "turn_count": 0,
-                "last_question": "",
-                "profile_complete": True,
-                "is_returning_patient": is_returning,
-                "patient_lookup_attempted": True,
-            }
+                initial_state = {
+                    "user_query": user_query.strip(),
+                    "history": [],
+                    "final_output": "",
+                    "patient_profile": profile_dict,
+                    "patient_history": history_dict,
+                    "patient_id": final_patient_id,
+                    "messages": [],
+                    "turn_count": 0,
+                    "last_question": "",
+                    "profile_complete": True,
+                    "is_returning_patient": is_returning,
+                    "patient_lookup_attempted": True,
+                }
 
-            config = {"configurable": {"thread_id": f"web-{final_patient_id}"}}
-            out_state = graph.invoke(initial_state, config)
-
-            st.session_state["graph_state"] = out_state
-            st.session_state["step"] = analyze_state(out_state)
+                config = {"configurable": {"thread_id": f"web-{final_patient_id}"}}
+                
+                # Track agent execution
+                agent_statuses = []
+                final_state = None
+                
+                # Stream through the graph to show agent transitions
+                for event in graph.stream(initial_state, config):
+                    for node_name, node_state in event.items():
+                        final_state = node_state  # Keep updating to get final state
+                        
+                        if node_name == "patient_intake":
+                            st.write("👤 **Patient Intake**: Profile verified")
+                            agent_statuses.append("Patient Intake completed")
+                            
+                        elif node_name == "retriever_agent":
+                            st.write("🔍 **Retriever Agent**: Searching MedlinePlus knowledge base...")
+                            agent_statuses.append("Retriever Agent completed")
+                            
+                        elif node_name == "consulting_agent":
+                            st.write("🧑‍⚕️ **Consulting Agent**: Analyzing your health concern...")
+                            agent_statuses.append("Consulting Agent analyzing")
+                            
+                        elif node_name == "followup":
+                            st.write("🤔 **Decision Point**: Evaluating if more information is needed...")
+                            agent_statuses.append("Evaluating follow-up needs")
+                            
+                        elif node_name == "personal_care_agent":
+                            st.write("💊 **Personal Care Agent**: Generating personalized health plan...")
+                            agent_statuses.append("Personal Care Agent working")
+                            
+                        elif node_name == "planner_summary":
+                            st.write("📋 **Planner**: Finalizing recommendations...")
+                            agent_statuses.append("Planner completing")
+                
+                # Use the final state captured during streaming
+                out_state = final_state if final_state else initial_state
+                
+                st.session_state["graph_state"] = out_state
+                st.session_state["step"] = analyze_state(out_state)
+                st.session_state["agent_status"] = agent_statuses
+                
+                # Determine final status
+                step = analyze_state(out_state)
+                if step["type"] == "followup":
+                    st.write("❓ Follow-up questions needed to provide better guidance")
+                    status_container.update(label="Consultation in progress - awaiting your response", state="running")
+                else:
+                    st.write("✅ **All agents completed** - Your personalized plan is ready!")
+                    status_container.update(label="Processing complete!", state="complete")
+            
             st.rerun()
-
 
     # ============================================================
     # 7) RENDER CURRENT STEP (FINAL OR FOLLOW-UP)
@@ -424,8 +645,6 @@ with tab1:
         st.info(st.session_state["patient_message"])
 
     if step is not None and state is not None:
-        # st.session_state["agent_step"] = step["type"]
-
         # ---------- FOLLOW-UP QUESTION ----------
         if step["type"] == "followup":
             st.markdown("### 🧑‍⚕️ Follow-up question from consulting agent")
@@ -447,55 +666,108 @@ with tab1:
                 if not followup_answer.strip():
                     st.warning("Please type an answer before submitting.")
                 else:
-                    # Mirror PlannerAgent.continue_with_answer()
-                    msgs = state.get("messages", [])
-                    msgs.append(HumanMessage(content=followup_answer.strip()))
-                    state["messages"] = msgs
-                    state["user_query"] = followup_answer.strip()
+                    # Create status container for follow-up processing
+                    status_container = st.status("Processing your answer...", expanded=True)
+                    
+                    with status_container:
+                        st.write("📝 Recording your response...")
+                        
+                        # Mirror PlannerAgent.continue_with_answer()
+                        msgs = state.get("messages", [])
+                        msgs.append(HumanMessage(content=followup_answer.strip()))
+                        state["messages"] = msgs
+                        state["user_query"] = followup_answer.strip()
 
-                    config = {
-                        "configurable": {
-                            "thread_id": f"web-{state.get('patient_id', 'noid')}"
+                        config = {
+                            "configurable": {
+                                "thread_id": f"web-{state.get('patient_id', 'noid')}"
+                            }
                         }
-                    }
-                    new_state = graph.invoke(state, config)
-                    st.session_state["graph_state"] = new_state
-                    st.session_state["step"] = analyze_state(new_state)
+                        
+                        # Stream through the graph to show agent transitions
+                        agent_statuses = []
+                        final_state = None
+                        
+                        for event in graph.stream(state, config):
+                            for node_name, node_state in event.items():
+                                final_state = node_state  # Keep updating to get final state
+                                    
+                                if node_name == "consulting_agent":
+                                    st.write("🧑‍⚕️ **Consulting Agent**: Re-analyzing with new information...")
+                                    agent_statuses.append("Consulting Agent re-analyzing")
+                                    
+                                elif node_name == "followup":
+                                    st.write("🤔 **Decision Point**: Evaluating if more information is needed...")
+                                    agent_statuses.append("Evaluating follow-up needs")
+                                    
+                                elif node_name == "personal_care_agent":
+                                    st.write("💊 **Personal Care Agent**: Generating personalized health plan...")
+                                    agent_statuses.append("Personal Care Agent working")
+                                    
+                                elif node_name == "planner_summary":
+                                    st.write("📋 **Planner**: Finalizing recommendations...")
+                                    agent_statuses.append("Planner completing")
+                        
+                        # Use the final state captured during streaming
+                        new_state = final_state if final_state else state
+                        
+                        st.session_state["graph_state"] = new_state
+                        st.session_state["step"] = analyze_state(new_state)
+                        st.session_state["agent_status"] = agent_statuses
+                        
+                        # Determine final status
+                        step = analyze_state(new_state)
+                        if step["type"] == "followup":
+                            st.write("❓ Additional follow-up questions needed")
+                            status_container.update(label="Processing complete - awaiting your response", state="running")
+                        else:
+                            st.write("✅ **All agents completed** - Your personalized plan is ready!")
+                            status_container.update(label="Processing complete!", state="complete")
+                    
                     st.rerun()
-        elif st.session_state.get("step")["type"]  == "final":
-            st.markdown("### ✅ Consultation complete, personal health plan ready!")
-            
-# st.caption(
-#     "Front-end strictly uses your health_coach_main.py pipeline "
-#     "(semantic_search, consulting_agent, personal_care_agent, DB + memory_store)."
-# )
-    # ---------- FINAL PLAN ----------
-with tab2:
-    st.markdown("### 💊🌡️🩺 Personalized health guidance")
-    if st.session_state.get("graph_state") is not None and st.session_state.get("step")["type"]  == "final":
         
-        st.markdown(
-            f"""
-            <div class="result-card">
-                <div class="result-header">
+        # ---------- FINAL PLAN ----------
+        elif step["type"] == "final" and step.get("output"):
+            # Check if output is not just a placeholder message
+            if step["output"] and step["output"] != "[No further questions or output.]":
+                st.markdown("### ✅ Consultation complete!")
+                st.success("Your personalized health plan is ready. Switch to the 'Personal Care Plan' tab to view it.")
+
+# ============================================================
+# 8) PERSONAL CARE PLAN TAB WITH PROPER MARKDOWN RENDERING
+# ============================================================
+with tab2:
+    step = st.session_state.get("step")
+    
+    if step and step["type"] == "final" and step.get("output"):
+        if step["output"] and step["output"] != "[No further questions or output.]":
+            st.markdown("### 💊 Personalized Health Guidance")
+
+            # 1. Clean the LLM output, but keep it as Markdown
+            cleaned_output = clean_llm_output(step["output"])
+
+            full_card_markdown = f"""
+            <div class="result-card" style="max-width: 100%; overflow-x: auto;">
+            <div class="result-header">
                 <div class="result-header-left">
-                    <span>🩺 Personalized Plan</span>
-                    <span class="result-badge">Generated by Multi-agent Healt Coach</span>
+                <span>🩺 Personalized Plan</span>
+                <span class="result-badge">Generated by Multi-agent Health Coach</span>
                 </div>
                 <span>MedlinePlus • Evidence-informed</span>
-                </div>
-                <div class="result-body">
-                <pre>{step['output']}</pre>
+            </div>
+            <div class="result-body" style="padding: 20px;">
+                <div class="output-content" style="line-height: 1.6; font-size: 14px;">
+            {cleaned_output}
                 </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            </div>
+            """
 
-        st.info(
-            "Educational use only — not a medical diagnosis. "
-            "If symptoms are severe or worsening, please seek urgent care."
-        )
+            # 3. Let Streamlit render the Markdown (including tables) inside the card
+            st.markdown(full_card_markdown, unsafe_allow_html=True)
 
-        # Save memory store to your DB (same as console main)
-        hc.final_memory_save()
+            st.info(
+                "Educational use only — not a medical diagnosis. "
+                "If symptoms are severe or worsening, please seek urgent care."
+            )
+            hc.final_memory_save()
