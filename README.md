@@ -5,6 +5,8 @@ Personalized Health Coach application created using a multi-agent system for con
 Inspiration:
 Patients can use this app to describe their symptoms, find their possible conditions and get information on treatments, and recommendations for lifestyle changes and doctor consultations. 
 
+[View the project report](Personal_Health_Coach_Report.pdf)
+
 ## Dataset
 This application uses evidence-based health information from MedlinePlus, an open source database of wide range of medical topics from National Library of Medicine.
 https://medlineplus.gov/healthtopics.html
