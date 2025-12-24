@@ -622,13 +622,16 @@ with tab1:
                             st.write("🤔 **Decision Point**: Evaluating if more information is needed...")
                             agent_statuses.append("Evaluating follow-up needs")
                             
+                        
+ 
                         elif node_name == "personal_care_agent":
-                            st.write("💊 **Personal Care Agent**: Generating personalized health plan...")
                             agent_statuses.append("Personal Care Agent working")
                             
                         elif node_name == "planner_summary":
                             st.write("📋 **Planner**: Finalizing recommendations...")
                             agent_statuses.append("Planner completing")
+
+                    
                 
                 # Use the final state captured during streaming
                 out_state = final_state if final_state else initial_state
@@ -713,7 +716,10 @@ with tab1:
                                 elif node_name == "followup":
                                     st.write("🤔 **Decision Point**: Evaluating if more information is needed...")
                                     agent_statuses.append("Evaluating follow-up needs")
-                                    
+                                    # Check if we're proceeding to personal care (no more follow-ups)
+                                    if not node_state.get("needs_more"):
+                                        st.write("✅ Sufficient information gathered")
+
                                 elif node_name == "personal_care_agent":
                                     st.write("💊 **Personal Care Agent**: Generating personalized health plan...")
                                     agent_statuses.append("Personal Care Agent working")
@@ -721,7 +727,8 @@ with tab1:
                                 elif node_name == "planner_summary":
                                     st.write("📋 **Planner**: Finalizing recommendations...")
                                     agent_statuses.append("Planner completing")
-                        
+
+                            
                         # Use the final state captured during streaming
                         new_state = final_state if final_state else state
                         
