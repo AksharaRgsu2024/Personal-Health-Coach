@@ -21,6 +21,7 @@ import sqlite3
 import pickle
 from langchain_core.runnables.graph import MermaidDrawMethod
 from IPython.display import Image
+from sqlite_db import MemoryManager
 
 # --------------------------------------------------------------------
 # ENV + GLOBALS
@@ -32,9 +33,8 @@ DB_PATH = "data/patients.db"
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Global store instance (not in state to avoid serialization issues)
-GLOBAL_STORE: Optional[InMemoryStore] = None
-GLOBAL_DB: Optional[sqlite3.Connection] = None
+# Global memory manager instance
+MEMORY_MANAGER: Optional[MemoryManager] = None
 
 
 @dataclass
@@ -73,542 +73,6 @@ class PipelineState(RetrievalState, ConsultState, CareState):
     profile_complete: bool
     is_returning_patient: bool
     patient_lookup_attempted: bool
-
-# --------------------------------------------------------------------
-# DB UTILITIES WITH MEMORY STORE PERSISTENCE
-# --------------------------------------------------------------------
-TRACKED_PATIENT_IDS = set()  # Track all patient IDs we've created/seen
-
-def track_patient_id(patient_id: str):
-    """Track a patient ID for later retrieval."""
-    global TRACKED_PATIENT_IDS
-    TRACKED_PATIENT_IDS.add(patient_id)
-    logger.info(f"✓ Tracking patient ID: {patient_id}")
-
-def init_db(db_path: Path) -> sqlite3.Connection:
-    """Initialize SQLite DB with memory_store table only."""
-    conn = sqlite3.connect(db_path)
-    
-    # Single unified memory_store table for LangGraph store persistence
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS memory_store (
-            namespace TEXT NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (namespace, key)
-        )
-        """
-    )
-    
-    # Index for faster lookups
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_memory_store_namespace 
-        ON memory_store(namespace)
-        """
-    )
-    
-    conn.commit()
-    return conn
-
-def get_connection():
-    return sqlite3.connect(DB_PATH)
-
-def save_memory_store_to_db():
-    """
-    Persist the entire memory store to SQLite.
-    Uses manual tracking instead of store.search() to avoid missing new patients.
-    """
-    global GLOBAL_STORE, GLOBAL_DB, TRACKED_PATIENT_IDS
-    
-    if not GLOBAL_STORE:
-        logger.error("Memory store not initialized")
-        return
-    
-    if not GLOBAL_DB:
-        logger.error("DB connection not initialized")
-        return
-    
-    try:
-        # conn=get_connection()
-        # cursor = conn.cursor()
-        cursor = GLOBAL_DB.cursor()
-        now = datetime.now().isoformat()
-        namespace = ("PatientDetails",)
-        namespace_str = "/".join(namespace)
-        
-        # CRITICAL FIX: Don't use search() - use our tracked IDs instead
-        logger.info(f"Processing {len(TRACKED_PATIENT_IDS)} tracked patient IDs...")
-        
-        if not TRACKED_PATIENT_IDS:
-            logger.warning("⚠️  No patient IDs tracked! This shouldn't happen.")
-            # Fallback: try to get IDs from database
-            cursor.execute("SELECT key FROM memory_store WHERE namespace = ?", (namespace_str,))
-            db_rows = cursor.fetchall()
-            for row in db_rows:
-                TRACKED_PATIENT_IDS.add(row[0])
-            logger.info(f"Loaded {len(TRACKED_PATIENT_IDS)} patient IDs from database")
-        
-        saved_count = 0
-        updated_count = 0
-        error_count = 0
-        not_found_count = 0
-        
-        for patient_id in TRACKED_PATIENT_IDS:
-            try:
-                # Get patient data using get() instead of search()
-                patient_item = GLOBAL_STORE.get(namespace, patient_id)
-                
-                if not patient_item or not patient_item.value:
-                    logger.warning(f"Patient {patient_id} not found in store")
-                    not_found_count += 1
-                    continue
-                
-                patient_data = patient_item.value
-                
-                # Validate the data structure
-                if not isinstance(patient_data, dict):
-                    logger.warning(f"Invalid data type for {patient_id}: {type(patient_data)}")
-                    error_count += 1
-                    continue
-                
-                if "profile" not in patient_data:
-                    logger.warning(f"Missing profile for {patient_id}")
-                    error_count += 1
-                    continue
-                
-                recommendations = patient_data.get("recommendations", [])
-                if not isinstance(recommendations, list):
-                    logger.warning(f"Invalid recommendations for {patient_id}")
-                    error_count += 1
-                    continue
-                
-                # Convert to JSON
-                try:
-                    value_json = json.dumps(patient_data, ensure_ascii=False)
-                except Exception as json_err:
-                    logger.error(f"JSON serialization failed for {patient_id}: {json_err}")
-                    error_count += 1
-                    continue
-                
-                # Check if record exists in database
-                cursor.execute(
-                    "SELECT created_at FROM memory_store WHERE namespace = ? AND key = ?",
-                    (namespace_str, patient_id)
-                )
-                existing = cursor.fetchone()
-                
-                if existing:
-                    # Update existing record
-                    cursor.execute(
-                        """
-                        UPDATE memory_store 
-                        SET value = ?, updated_at = ?
-                        WHERE namespace = ? AND key = ?
-                        """,
-                        (value_json, now, namespace_str, patient_id)
-                    )
-                    updated_count += 1
-                    
-                    profile = patient_data.get("profile", {})
-                    logger.info(
-                        f"  ✓ Updated: {profile.get('name', 'Unknown')} "
-                        f"({patient_id}) - {len(recommendations)} rec(s)"
-                    )
-                else:
-                    # Insert new record
-                    created_at = patient_data.get("created_at", now)
-                    cursor.execute(
-                        """
-                        INSERT INTO memory_store (namespace, key, value, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (namespace_str, patient_id, value_json, created_at, now)
-                    )
-                    saved_count += 1
-                    
-                    profile = patient_data.get("profile", {})
-                    logger.info(
-                        f"  ✅ NEW: {profile.get('name', 'Unknown')} "
-                        f"({patient_id}) - {len(recommendations)} rec(s)"
-                    )
-                    
-            except Exception as item_error:
-                logger.error(f"Error processing {patient_id}: {item_error}")
-                import traceback
-                traceback.print_exc()
-                error_count += 1
-                continue
-        
-        # Commit changes
-        # conn.commit()
-        GLOBAL_DB.commit()
-        
-        total = saved_count + updated_count
-        logger.info(
-            f"✓ Memory store persisted: "
-            f"{saved_count} new, {updated_count} updated, "
-            f"{error_count} errors, {not_found_count} not found (total: {total})"
-        )
-        
-        # Verify database count
-        cursor.execute(
-            "SELECT COUNT(*) FROM memory_store WHERE namespace = ?",
-            (namespace_str,)
-        )
-        db_count = cursor.fetchone()[0]
-        logger.info(f"✓ Database contains {db_count} patient record(s)")
-        
-    except Exception as e:
-        logger.error(f"Error saving memory store to DB: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            GLOBAL_DB.rollback()
-            # conn.rollback()
-        except:
-            pass
-
-
-
-def load_memory_store_from_db(conn: sqlite3.Connection) -> InMemoryStore:
-    """Load memory store from SQLite database."""
-    try:
-
-        # Initialize empty store
-        store = InMemoryStore()
-        
-        cursor = conn.cursor()
-        cursor.execute("SELECT namespace, key, value FROM memory_store")
-        rows = cursor.fetchall()
-        
-        for namespace_str, key, value_json in rows:
-            namespace = tuple(namespace_str.split("/"))
-            value = json.loads(value_json)
-            
-            # Put the item back into the store
-            store.put(namespace, key, value)
-        
-        logger.info(f"✓ Memory store loaded from DB ({len(rows)} items)")
-        return store
-        
-    except Exception as e:
-        logger.error(f"Error loading memory store from DB: {e}")
-        return InMemoryStore()
-
-
-def db_get_patient(patient_id: str) -> Optional[PatientHistory]:
-    """Get patient from memory_store table via LangGraph store."""
-    global GLOBAL_STORE
-    if not GLOBAL_STORE:
-        return None
-
-    try:
-        # Use the store lookup instead of direct DB query
-        return lookup_patient_in_store(patient_id, GLOBAL_STORE)
-    except Exception as e:
-        logger.error(f"Error reading patient from store: {e}")
-        return None
-
-
-def db_save_patient_history(history: PatientHistory):
-    """Save patient to memory_store table via LangGraph store."""
-    global GLOBAL_STORE, GLOBAL_DB
-    if not GLOBAL_STORE or not GLOBAL_DB:
-        return
-
-    try:
-        namespace = ("PatientDetails",)
-        profile = history.profile
-        now = datetime.now().isoformat()
-        history.last_updated = now
-
-        # Save to memory store
-        GLOBAL_STORE.put(namespace, profile.id, history.model_dump())
-        
-        # Persist to DB
-        save_memory_store_to_db()
-        
-        logger.info(f"✓ Patient {profile.id} saved/updated in memory_store.")
-    except Exception as e:
-        logger.error(f"Error saving patient to memory_store: {e}")
-
-# --------------------------------------------------------------------
-# MEMORY HELPERS (Store + DB)
-# --------------------------------------------------------------------
-
-def lookup_patient_in_store(patient_id: str, store: InMemoryStore) -> Optional[PatientHistory]:
-    """Look up patient in the store by patient ID."""
-    if not patient_id:
-        return None
-    
-    namespace = ("PatientDetails",)
-    
-    try:
-        patient_data = store.get(namespace, patient_id)
-        if patient_data and patient_data.value:
-            history = PatientHistory.model_validate(patient_data.value)
-            return history
-    except Exception as e:
-        logger.error(f"Error looking up patient {patient_id}: {e}")
-    
-    return None
-
-
-def save_new_patient_to_store(patient_profile: PatientProfile, store: InMemoryStore) -> bool:
-    """Save a new patient profile to the store and DB."""
-    global GLOBAL_DB, GLOBAL_STORE
-    namespace = ("PatientDetails",)
-    
-    try:
-        now = datetime.now().isoformat()
-        history = PatientHistory(
-            profile=patient_profile,
-            recommendations=[],
-            created_at=now,
-            last_updated=now
-        )
-        
-        patient_id = patient_profile.id
-        
-        # Save to memory store
-        GLOBAL_STORE.put(namespace, patient_id, history.model_dump())
-        logger.info(f"✓ Put patient {patient_id} into memory store")
-        
-        # CRITICAL: Track this patient ID
-        track_patient_id(patient_id)
-        
-        # Verify it's in the store
-        verification = GLOBAL_STORE.get(namespace, patient_id)
-        if not verification or not verification.value:
-            logger.error(f"❌ Patient {patient_id} not retrievable from store after put()!")
-            return False
-        
-        logger.info(f"✓ Verified patient {patient_id} is in memory store")
-        
-        # Immediately persist to DB
-        if GLOBAL_DB:
-            logger.info("Immediately persisting new patient to DB...")
-            save_memory_store_to_db()
-            
-            # Verify it's in the database
-            cursor = GLOBAL_DB.cursor()
-            # conn=get_connection()
-            # cursor = conn.cursor()
-            cursor.execute(
-                "SELECT key FROM memory_store WHERE namespace = ? AND key = ?",
-                ("/".join(namespace), patient_id)
-            )
-            result = cursor.fetchone()
-            
-            if result:
-                logger.info(f"✓ VERIFIED: Patient {patient_id} is in DATABASE")
-                return True
-            else:
-                logger.error(f"❌ Patient {patient_id} NOT in database after save!")
-                return False
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error saving patient: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-
-def update_patient_history_with_plan(state: PipelineState):
-    """
-    Ensure patient history with recommendations is saved to SQLite DB.
-    """
-    global GLOBAL_STORE, GLOBAL_DB
-    if not GLOBAL_STORE or not GLOBAL_DB:
-        logger.error("Global store or DB not initialized")
-        return
-
-    patient_id = state.get("patient_id", "").strip()
-    
-    if not patient_id:
-        logger.warning("No patient ID provided, cannot update history")
-        return
-
-    namespace = ("PatientDetails",)
-    plan_text = state.get("plan", "")
-    
-    if not plan_text:
-        logger.warning("No care plan generated, skipping history update")
-        return
-
-    try:
-        logger.info(f"Retrieving patient {patient_id} from LangGraph store...")
-        history = lookup_patient_in_store(patient_id, GLOBAL_STORE)
-        
-        if history is None:
-            logger.warning(f"Patient {patient_id} not in store. Creating from state...")
-            
-            profile_dict = state.get("patient_profile", {})
-            if not profile_dict:
-                logger.error("No patient profile in state, cannot save")
-                return
-            
-            try:
-                profile = PatientProfile(**profile_dict)
-                history = PatientHistory(
-                    profile=profile,
-                    recommendations=[],
-                    created_at=datetime.now().isoformat(),
-                    last_updated=datetime.now().isoformat()
-                )
-                # Immediately save this new history to store
-                GLOBAL_STORE.put(namespace, patient_id, history.model_dump())
-                logger.info(f"✓ Created and saved new history for {patient_id}")
-            except Exception as e:
-                logger.error(f"Failed to create patient history: {e}")
-                return
-        
-        logger.info(f"✓ Patient {history.profile.name} loaded with {len(history.recommendations)} existing recommendations")
-        
-        # Check if already saved (prevent duplicates)
-        today = datetime.now().strftime("%Y-%m-%d")
-        already_saved = False
-        
-        if history.recommendations:
-            latest_rec = history.recommendations[-1]
-            if latest_rec.date == today and plan_text[:100] in latest_rec.recommendations:
-                logger.info("Recommendation already saved")
-                already_saved = True
-        
-        # Create and add recommendation if not already saved
-        if not already_saved:
-            logger.info("Creating new recommendation...")
-            
-            profile_dict = state.get("patient_profile", {})
-            symptoms = profile_dict.get("symptoms", [])
-            symptoms_list = [s.get("description", "") for s in symptoms if s.get("description")]
-            
-            care_details = state.get("care_details", {})
-            conditions = care_details.get("possible_conditions", [])
-            
-            if not conditions and "POSSIBLE CONDITIONS:" in plan_text:
-                conditions_section = plan_text.split("POSSIBLE CONDITIONS:")[1].split("\n\n")[0]
-                conditions = [line.strip("•- ") for line in conditions_section.split("\n") if line.strip()][:5]
-            
-            new_recommendation = PatientRecommendation(
-                date=today,
-                possible_conditions=conditions[:5] if conditions else ["Consultation completed"],
-                recommendations=plan_text,
-                symptoms_at_time=symptoms_list if symptoms_list else ["General health concern"]
-            )
-            
-            history.recommendations.append(new_recommendation)
-            logger.info(f"✓ Added new recommendation. Total: {len(history.recommendations)}")
-        
-        # Update timestamps
-        history.last_updated = datetime.now().isoformat()
-        
-        # Save to memory store
-        logger.info("Saving to LangGraph memory store...")
-        GLOBAL_STORE.put(namespace, patient_id, history.model_dump())
-        logger.info("✓ Saved to memory store")
-        
-        # CRITICAL: Persist to SQLite DB using globals
-        logger.info("Persisting memory store to SQLite DB...")
-        save_memory_store_to_db()  # No params - uses globals
-        logger.info("✓ Memory store persisted to DB")
-        
-        # Verify in database
-        cursor = GLOBAL_DB.cursor()
-        # conn=get_connection()
-        # cursor = conn.cursor()
-        cursor.execute(
-            "SELECT value FROM memory_store WHERE namespace = ? AND key = ?",
-            ("/".join(namespace), patient_id)
-        )
-        db_row = cursor.fetchone()
-        
-        if db_row:
-            db_data = json.loads(db_row[0])
-            db_rec_count = len(db_data.get("recommendations", []))
-            logger.info(f"✓ Database verification SUCCESS: {db_rec_count} recommendations for {patient_id}")
-            
-            print(f"\n{'='*60}")
-            print(f"✓ Patient history saved to database")
-            print(f"  Patient: {history.profile.name} ({patient_id})")
-            print(f"  Total visits: {len(history.recommendations)}")
-            if history.recommendations:
-                latest_rec = history.recommendations[-1]
-                print(f"  Latest visit: {latest_rec.date}")
-            print(f"{'='*60}\n")
-        else:
-            logger.error(f"❌ Patient {patient_id} not found in database after save!")
-            logger.error("This indicates save_memory_store_to_db() is not working correctly")
-            
-            # Debug: Check what's actually in the store
-            test_get = GLOBAL_STORE.get(namespace, patient_id)
-            if test_get and test_get.value:
-                logger.info(f"✓ Patient IS in memory store (has {len(test_get.value.get('recommendations', []))} recs)")
-            else:
-                logger.error("❌ Patient NOT in memory store either!")
-        
-    except Exception as e:
-        logger.error(f"Error updating patient history: {e}")
-        import traceback
-        traceback.print_exc()
-        if GLOBAL_DB:
-            try:
-                GLOBAL_DB.rollback()
-            except:
-                pass
-
-def debug_memory_store():
-    """Debug function to check what's in the memory store."""
-    global GLOBAL_STORE
-    
-    if not GLOBAL_STORE:
-        print("❌ GLOBAL_STORE is None")
-        return
-    
-    namespace = ("PatientDetails",)
-    
-    print("\n" + "="*60)
-    print("DEBUGGING MEMORY STORE")
-    print("="*60)
-    
-    # Try search method
-    try:
-        results = list(GLOBAL_STORE.search(namespace))
-        print(f"✓ store.search() found {len(results)} items")
-        for item in results:
-            print(f"  - {item.key}: {item.value.get('profile', {}).get('name', 'Unknown')}")
-    except Exception as e:
-        print(f"❌ store.search() failed: {e}")
-    
-    # Try direct access if available
-    if hasattr(GLOBAL_STORE, '_data'):
-        print(f"\n✓ Store has _data attribute")
-        if namespace in GLOBAL_STORE._data:
-            print(f"✓ Namespace exists in _data")
-            print(f"✓ Contains {len(GLOBAL_STORE._data[namespace])} items")
-            for key in GLOBAL_STORE._data[namespace].keys():
-                print(f"  - {key}")
-        else:
-            print(f"❌ Namespace NOT in _data")
-            print(f"Available namespaces: {list(GLOBAL_STORE._data.keys())}")
-    else:
-        print("❌ Store has no _data attribute")
-    
-    print("="*60 + "\n")
-
-
-def generate_patient_id(name: str) -> str:
-    """Generate a unique patient ID based on name and timestamp."""
-    name_part = ''.join(name.split()[:2])[:6].upper().replace(" ", "")
-    timestamp = datetime.now().strftime("%Y%m%d%H%M")
-    return f"P-{name_part}-{timestamp}"
 
 
 def _parse_care_output(text: str) -> dict:
@@ -658,9 +122,9 @@ def patient_intake_node(state: PipelineState) -> PipelineState:
     """Handle patient intake - lookup or create new profile."""
     logging.info("Patient Intake node running...")
     
-    global GLOBAL_STORE
-    if not GLOBAL_STORE:
-        raise ValueError("Global store not initialized")
+    global MEMORY_MANAGER
+    if not MEMORY_MANAGER:
+        raise ValueError("Memory manager not initialized")
     
     if state.get("profile_complete"):
         logging.info("Profile already complete, skipping intake")
@@ -670,15 +134,15 @@ def patient_intake_node(state: PipelineState) -> PipelineState:
     
     if patient_id:
         print(f"🔍 Looking up patient ID: {patient_id}...")
-        patient_hist = lookup_patient_in_store(patient_id, GLOBAL_STORE)
+        patient_hist = MEMORY_MANAGER.lookup_patient(patient_id)
         
         if patient_hist:
             print(f"\n✓ Welcome back, {patient_hist.profile.name}!")
             print(f"   Age: {patient_hist.profile.age}, Sex: {patient_hist.profile.sex}")
             print(f"   Previous visits: {len(patient_hist.recommendations)}")
             
-            # CRITICAL: Track this returning patient
-            track_patient_id(patient_id)
+            # Track this returning patient
+            MEMORY_MANAGER.track_patient_id(patient_id)
             
             if patient_hist.recommendations:
                 last_rec = patient_hist.recommendations[-1]
@@ -718,7 +182,7 @@ def patient_intake_node(state: PipelineState) -> PipelineState:
         age = 0
         print("Invalid age, setting to 0")
     
-    new_patient_id = generate_patient_id(patient_name)
+    new_patient_id = MemoryManager.generate_patient_id(patient_name)
     print(f"\n🆔 Generated Patient ID: {new_patient_id}")
     print("⚠️  Please save this ID for future visits!")
     
@@ -730,7 +194,7 @@ def patient_intake_node(state: PipelineState) -> PipelineState:
         symptoms=[]
     )
     
-    save_success = save_new_patient_to_store(new_profile, GLOBAL_STORE)
+    save_success = MEMORY_MANAGER.save_new_patient_profile(new_profile)
     
     if save_success:
         print(f"\n✓ Profile created successfully for {patient_name}")
@@ -752,7 +216,7 @@ def route_from_intake(state: PipelineState) -> Literal["retriever_agent", END]:
     """Route after intake based on whether profile is complete."""
     if state.get("profile_complete"):
         logging.info("✓ Profile complete, proceeding to retrieval")
-        return "retriever_agent"  # ✅ Changed from "retrieve"
+        return "retriever_agent"
     else:
         logging.error("✗ Profile incomplete, ending workflow")
         return END
@@ -781,7 +245,8 @@ def retriever_agent(state: PipelineState) -> PipelineState:
 
 def consulting_agent(state: PipelineState) -> PipelineState:
     logging.info("Consulting agent running...")
-    MAX_QUESTIONS=3
+    MAX_QUESTIONS = 3
+    
     # Build consulting agent graph (with memory)
     consult_graph = build_consulting_agent_graph()
     
@@ -825,7 +290,7 @@ def consulting_agent(state: PipelineState) -> PipelineState:
         "messages": state.get("messages", []),
         "retrieved_docs": retrieved_docs,
         "patient_profile": patient_profile,
-        "turn_count":  current_turn,
+        "turn_count": current_turn,
         "need_more_info": True,
         "red_flag": False,
         "last_question": state.get("last_question"),
@@ -873,7 +338,7 @@ def consulting_agent(state: PipelineState) -> PipelineState:
     state["messages"] = updated.get("messages", [])
     state["turn_count"] = updated.get("turn_count", 1)
     state["needs_more"] = bool(updated.get("need_more_info"))
-    if (bool(followup_q)==False):
+    if not bool(followup_q):
         state["needs_more"] = False
     state["last_question"] = updated.get("last_question")
     
@@ -893,7 +358,7 @@ def followup_node(state: PipelineState) -> PipelineState:
 def personal_care_agent(state: PipelineState) -> PipelineState:
     logging.info("Personal Care agent running with KG + MedlinePlus...")
 
-    global GLOBAL_STORE
+    global MEMORY_MANAGER
     
     profile_dict = state.get("patient_profile", {})
     user_query = state.get("user_query", "")
@@ -905,7 +370,7 @@ def personal_care_agent(state: PipelineState) -> PipelineState:
             patient_profile=profile_dict,
             user_query=user_query,
             passages=passages,
-            store=GLOBAL_STORE
+            store=MEMORY_MANAGER.store
         )
         
     except Exception as e:
@@ -932,6 +397,9 @@ def personal_care_agent(state: PipelineState) -> PipelineState:
 
 def planner_summary_node(state: PipelineState) -> PipelineState:
     logging.info("Planner summary node running...")
+    
+    global MEMORY_MANAGER
+    
     summary = (
         f"Query: {state['user_query']}\n"
         f"Questions: {state.get('questions')}\n"
@@ -944,8 +412,23 @@ def planner_summary_node(state: PipelineState) -> PipelineState:
 
     state["final_output"] = state.get("plan") or "[No care plan was generated.]"
     
-    # Save memory store after generating plan
-    update_patient_history_with_plan(state)
+    # Save patient history with recommendations using memory manager
+    patient_id = state.get("patient_id", "").strip()
+    plan_text = state.get("plan", "")
+    
+    if patient_id and plan_text and MEMORY_MANAGER:
+        profile_dict = state.get("patient_profile", {})
+        care_details = state.get("care_details", {})
+        
+        success = MEMORY_MANAGER.update_patient_with_recommendation(
+            patient_id=patient_id,
+            plan_text=plan_text,
+            patient_profile_dict=profile_dict,
+            care_details=care_details
+        )
+        
+        if not success:
+            logger.error("Failed to save patient history with recommendation")
     
     return state
 
@@ -955,6 +438,7 @@ def route_from_consult(state: PipelineState) -> Literal["followup", "personal_ca
         return "followup"
     else:
         return "personal_care_agent"
+
 
 # ----------------- Build the graph -----------------
 def build_planner_graph():
@@ -991,7 +475,6 @@ def build_planner_graph():
         }
     )
 
-    
     workflow.add_edge("personal_care_agent", "planner_summary")
     workflow.add_edge("planner_summary", END)
 
@@ -1062,75 +545,43 @@ class PlannerAgent:
 
         return {"type": "final", "output": "[No further questions or output.]"}
 
+
 def save_graph(planner_graph):
-    # Save graph image
+    """Save graph visualization as PNG."""
     graph = planner_graph.get_graph()
     png_bytes = graph.draw_mermaid_png(draw_method=MermaidDrawMethod.API)
 
     with open("langgraph_diagram.png", "wb") as f:
         f.write(png_bytes)
-        
+
 
 def init_memory_backend():
-    global GLOBAL_STORE, GLOBAL_DB, TRACKED_PATIENT_IDS
+    """Initialize the memory manager and embedding model."""
+    global MEMORY_MANAGER
     
-    # Initialize SQLite DB first
-    print("Initializing SQLite DB...")
-    GLOBAL_DB = init_db(DB_PATH)
-    print(f"✓ DB initialized at {DB_PATH}\n")
-    
-    # Initialize memory store - load from DB if exists
-    print("Initializing memory store...")
-    try:
-        GLOBAL_STORE = load_memory_store_from_db(GLOBAL_DB)
-        print("✓ Memory store loaded from DB\n")
-        
-        # CRITICAL: Load all patient IDs from database into tracking set
-        cursor = GLOBAL_DB.cursor()
-        cursor.execute(
-            "SELECT key FROM memory_store WHERE namespace = ?",
-            ("PatientDetails",)
-        )
-        rows = cursor.fetchall()
-        for row in rows:
-            TRACKED_PATIENT_IDS.add(row[0])
-        
-        print(f"✓ Tracking {len(TRACKED_PATIENT_IDS)} existing patient IDs\n")
-        
-    except Exception as e:
-        logger.warning(f"Could not load from DB, creating new store: {e}")
-        GLOBAL_STORE = InMemoryStore()
-        print("✓ New memory store initialized\n")
+    print("Initializing Memory Manager...")
+    MEMORY_MANAGER = MemoryManager(DB_PATH)
+    MEMORY_MANAGER.init()
+    print("✓ Memory Manager initialized\n")
     
     # Load embedding model
     load_embedding_model()
-    print(f"✓ Embedding model loaded for semantic search\n")
+    print("✓ Embedding model loaded for semantic search\n")
 
-
-def final_memory_save():
-    global GLOBAL_STORE, GLOBAL_DB
-        # Final save of memory store
-    if GLOBAL_STORE and GLOBAL_DB:
-        print("\nSaving memory store to database...")
-        save_memory_store_to_db()
-        print("✓ Memory store saved to database.\n")
-    
-def close_database():
-    global GLOBAL_DB
-    # Close database connection
-    if GLOBAL_DB:
-        GLOBAL_DB.close()
 
 if __name__ == "__main__":
     print("\n" + "="*70)
     print("🔵 PERSONAL HEALTH COACH — Multi-Agent System")
     print("="*70 + "\n")
     
+    # Initialize memory backend
     init_memory_backend()
+    
     # Build graph
     planner_graph = build_planner_graph()
-    # save_graph(planner_graph)
+    # save_graph(planner_graph)  # Uncomment to save visualization
     planner = PlannerAgent(planner_graph)
+    
     # Ask for patient ID first
     print("="*70)
     print("PATIENT IDENTIFICATION")
@@ -1168,10 +619,11 @@ if __name__ == "__main__":
             step = planner.continue_with_answer(answer)
     
     # Final save of memory store
-    final_memory_save()
-    close_database()
+    if MEMORY_MANAGER:
+        print("\n💾 Saving all data to database...")
+        MEMORY_MANAGER.save_to_db()
+        print("✓ All data saved successfully")
+    
     print("\n" + "="*70)
     print("Thank you for using the Personal Health Coach! Take care! 💙")
     print("="*70 + "\n")
-    
-    

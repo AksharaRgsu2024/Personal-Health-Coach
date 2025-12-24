@@ -1,4 +1,4 @@
-# app.py — Fixed Streamlit front-end for health_coach_main.py
+# app.py — Updated Streamlit front-end for health_coach_main.py with MemoryManager
 
 from pathlib import Path
 import sqlite3
@@ -13,7 +13,7 @@ import html
 import markdown
 import re
 
-#Session state
+# Session state
 # Initialize session state variables if they don't exist
 if "graph_state" not in st.session_state:
     st.session_state["graph_state"] = None
@@ -26,16 +26,16 @@ if "agent_status" not in st.session_state:
 
 
 # ============================================================
-# 1) BACKEND INITIALIZATION — USES DB_PATH, GLOBAL_STORE
+# 1) BACKEND INITIALIZATION — USES MemoryManager
 # ============================================================
 @st.cache_resource
 def init_backend():
     """
-    Init SQLite DB, memory store, and compiled graph ONCE,
-    using a thread-safe SQLite connection for Streamlit.
+    Initialize MemoryManager and compiled graph ONCE,
+    using a thread-safe approach for Streamlit.
     """
     hc.init_memory_backend()
-    # 4) LangGraph workflow
+    # Build LangGraph workflow
     graph = hc.build_planner_graph()
     return graph
 
@@ -74,16 +74,19 @@ def load_or_create_patient(
     age_str: str,
 ):
     """
-    Follows the same idea as patient_intake_node.
+    Follows the same idea as patient_intake_node but uses MemoryManager.
     """
-    store = hc.GLOBAL_STORE
+    memory_mgr = hc.MEMORY_MANAGER
     typed_patient_id = (typed_patient_id or "").strip()
 
     # 1) Try existing ID
     if typed_patient_id:
-        history = hc.lookup_patient_in_store(typed_patient_id, store)
+        history = memory_mgr.lookup_patient(typed_patient_id)
         if history is not None:
             profile = history.profile
+            # Track this returning patient
+            memory_mgr.track_patient_id(profile.id)
+            
             return (
                 profile.model_dump(),
                 history.model_dump(),
@@ -99,7 +102,7 @@ def load_or_create_patient(
     else:
         info = "New patient profile will be created."
 
-    # 2) Create new profile (mirrors console questions)
+    # 2) Create new profile
     if not name.strip():
         name = "Unknown Patient"
 
@@ -111,8 +114,8 @@ def load_or_create_patient(
     except ValueError:
         age = 0
 
-    # Use YOUR ID generator
-    new_id = hc.generate_patient_id(name)
+    # Use MemoryManager's ID generator
+    new_id = hc.MemoryManager.generate_patient_id(name)
 
     profile_obj = PatientProfile(
         id=new_id,
@@ -122,8 +125,12 @@ def load_or_create_patient(
         symptoms=[],
     )
 
-    # Use YOUR saver (writes via GLOBAL_STORE + GLOBAL_DB)
-    hc.save_new_patient_to_store(profile_obj, store)
+    # Use MemoryManager's save method
+    success = memory_mgr.save_new_patient_profile(profile_obj, persist_immediately=True)
+    
+    if not success:
+        st.error("Failed to save patient profile. Please try again.")
+        return None, None, None, False, "Error creating profile"
 
     return (
         profile_obj.model_dump(),
@@ -135,6 +142,7 @@ def load_or_create_patient(
 
 
 def clean_llm_output(text: str) -> str:
+    """Clean LLM output for better display."""
     text = text.strip("\n")
     text = "\n".join(line.lstrip() for line in text.splitlines())
     text = re.sub(r'[\u00A0\u200B\u202F]', ' ', text)
@@ -150,6 +158,7 @@ def clean_llm_output(text: str) -> str:
     # remove stray closing divs and body/html tags
     text = re.sub(r"</?(div|body|html)[^>]*>", "", text, flags=re.IGNORECASE)
     return text
+
 
 def fix_markdown_tables(text):
     """Fix malformed markdown tables by splitting on || and rebuilding with proper line breaks."""
@@ -181,6 +190,7 @@ def fix_markdown_tables(text):
     
     return '\n'.join(fixed_lines)
 
+
 def render_markdown_with_tables(text):
     """Convert markdown text to HTML, handling tables properly."""
     # Clean the text first
@@ -196,6 +206,7 @@ def render_markdown_with_tables(text):
     )
     
     return html_output
+
 
 # ============================================================
 # 3) STREAMLIT PAGE LAYOUT & STYLES
@@ -462,7 +473,6 @@ st.markdown(
 )
 
 
-
 # ============================================================
 # 4) HERO CARD + PATIENT INFO (SIDEBAR)
 # ============================================================
@@ -527,15 +537,12 @@ with tab1:
     with col2:
         clear_btn = st.button("🧹 Clear conversation")
 
-
-
     if clear_btn:
         st.session_state["graph_state"] = None
         st.session_state["step"] = {"type": "", "output": ""}
         st.session_state["patient_message"] = ""
         st.session_state["agent_status"] = []
         st.rerun()
-
 
     # ============================================================
     # 6) FIRST TURN: RUN FULL PIPELINE WITH AGENT STATUS TRACKING
@@ -550,18 +557,25 @@ with tab1:
             with status_container:
                 st.write("🔍 Loading patient information...")
                 
+                result = load_or_create_patient(
+                    patient_id_input,
+                    name_input,
+                    sex_input,
+                    age_input,
+                )
+                
+                # Check if profile creation was successful
+                if result[0] is None:
+                    st.error("Failed to load or create patient profile. Please try again.")
+                    st.stop()
+                
                 (
                     profile_dict,
                     history_dict,
                     final_patient_id,
                     is_returning,
                     msg,
-                ) = load_or_create_patient(
-                    patient_id_input,
-                    name_input,
-                    sex_input,
-                    age_input,
-                )
+                ) = result
 
                 st.session_state["patient_message"] = msg
                 st.write(f"✅ {msg}")
@@ -770,4 +784,10 @@ with tab2:
                 "Educational use only — not a medical diagnosis. "
                 "If symptoms are severe or worsening, please seek urgent care."
             )
-            hc.final_memory_save()
+            
+            # Save memory on completion
+            if hc.MEMORY_MANAGER:
+                try:
+                    hc.MEMORY_MANAGER.save_to_db()
+                except Exception as e:
+                    st.error(f"Error saving data: {e}")
