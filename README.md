@@ -53,6 +53,11 @@ Execute:
 6. To run Streamlit application:
 `streamlit run app.py`
 
+
+
+https://github.com/user-attachments/assets/f3320d91-d6d9-4c9c-8c07-c6077760f509
+
+
 ### References
 https://pmc.ncbi.nlm.nih.gov/articles/PMC8075483/  
    
